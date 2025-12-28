@@ -67,6 +67,7 @@ pub struct App {
     lsp_manager: Option<LspManager>,
     lsp_receiver: Option<mpsc::UnboundedReceiver<LspResponse>>,
     diagnostics_store: DiagnosticsStore,
+    navigation_history: crate::lsp::NavigationHistory,
 }
 
 impl App {
@@ -115,6 +116,7 @@ impl App {
             lsp_manager: None,
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
+            navigation_history: crate::lsp::NavigationHistory::new(),
         })
     }
 
@@ -162,6 +164,7 @@ impl App {
                 lsp_manager: None,
                 lsp_receiver: None,
                 diagnostics_store: DiagnosticsStore::new(),
+                navigation_history: crate::lsp::NavigationHistory::new(),
             });
         }
 
@@ -193,6 +196,7 @@ impl App {
             lsp_manager: None,
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
+            navigation_history: crate::lsp::NavigationHistory::new(),
         })
     }
 
@@ -1139,6 +1143,12 @@ impl App {
                 buffer.editor_state_mut().viewport.center_on_line(current_line);
             }
 
+            // Ctrl+L - Center view on cursor (traditional Emacs binding)
+            (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+                let current_line = buffer.editor_state().cursor.line;
+                buffer.editor_state_mut().viewport.center_on_line(current_line);
+            }
+
             // Ctrl+Tab - Next buffer
             (KeyCode::Tab, KeyModifiers::CONTROL) => {
                 self.workspace.next_buffer();
@@ -1396,18 +1406,56 @@ impl App {
             }
 
             // F12 - Jump to definition
-            (KeyCode::F(12), _) => {
+            (KeyCode::F(12), KeyModifiers::NONE) => {
                 if let Some(lsp) = &mut self.lsp_manager {
                     if let Some(path) = buffer.file_path() {
                         if crate::lsp::Language::from_path(path).is_some() {
                             let pos = buffer.editor_state().cursor.position();
                             let buffer_id = buffer.id().0;
+
+                            // Push current location to navigation history before jumping
+                            let current_location = crate::lsp::Location {
+                                path: path.clone(),
+                                position: crate::lsp::Position::new(pos.line, pos.column),
+                            };
+                            self.navigation_history.push(current_location);
+
                             let lsp_pos = crate::lsp::Position::new(pos.line, pos.column);
                             if lsp.goto_definition(buffer_id, path.clone(), lsp_pos).is_ok() {
                                 self.message = Some("Finding definition...".to_string());
                             }
                         }
                     }
+                }
+            }
+
+            // Alt+F12 - Jump back to previous location
+            (KeyCode::F(12), KeyModifiers::ALT) => {
+                if let Some(location) = self.navigation_history.pop() {
+                    // Open the file and jump to the position
+                    match self.workspace.open_file(location.path.clone()) {
+                        Ok(_) => {
+                            if let Some(buffer) = self.workspace.active_buffer_mut() {
+                                let editor_state = buffer.editor_state_mut();
+                                editor_state.cursor.set_position(crate::buffer::Position {
+                                    line: location.position.line,
+                                    column: location.position.column,
+                                });
+                                editor_state.ensure_cursor_visible();
+                                self.message = Some(format!(
+                                    "Jumped back to {} ({}:{})",
+                                    location.path.display(),
+                                    location.position.line + 1,
+                                    location.position.column + 1
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("Error opening file: {}", e));
+                        }
+                    }
+                } else {
+                    self.message = Some("No more locations in navigation history".to_string());
                 }
             }
 
@@ -1505,6 +1553,35 @@ impl App {
                 });
                 editor_state.cursor.line += 1;
                 editor_state.cursor.move_horizontal(0);
+                editor_state.ensure_cursor_visible();
+            }
+
+            // Tab - Insert 4 spaces
+            (KeyCode::Tab, KeyModifiers::NONE) => {
+                let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                // If there's a selection, delete it first
+                if let Some(selection) = editor_state.selection {
+                    let (start, end) = selection.range();
+                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                        undo_manager.record(Change::Delete {
+                            pos: start,
+                            text: deleted,
+                        });
+                        editor_state.cursor.set_position(start);
+                        editor_state.clear_selection();
+                    }
+                }
+
+                let pos = editor_state.cursor.position();
+                // Insert 4 spaces
+                text_buffer.insert(pos, "    ")?;
+                undo_manager.record(Change::Insert {
+                    pos,
+                    text: "    ".to_string(),
+                });
+                // Move cursor 4 positions right
+                editor_state.cursor.column += 4;
                 editor_state.ensure_cursor_visible();
             }
 

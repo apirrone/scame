@@ -54,6 +54,7 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+Shift+Z` - Redo
 - `Backspace/Delete` - Delete characters
 - `Enter` - New line
+- `Tab` - Insert 4 spaces (soft tabs, useful for Python indentation)
 
 *File Operations:*
 - `Ctrl+X Ctrl+S` - Save file (Emacs style - press Ctrl+X, then Ctrl+S)
@@ -89,8 +90,9 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 
 *Navigation:*
 - `Alt+G` - Jump to line (enter line number, press Enter to jump)
-- `Ctrl+J` - Center view on cursor (Emacs style - scrolls viewport to center cursor vertically)
+- `Ctrl+J` or `Ctrl+L` - Center view on cursor (Emacs style - scrolls viewport to center cursor vertically)
 - `F12` - Jump to definition (LSP - works with Rust/Python when language server installed)
+- `Alt+F12` - Jump back to previous location (navigate back through jump history)
 
 *Universal Cancel:*
 - `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
@@ -198,8 +200,8 @@ scame/
 - [x] Diagnostics display (● markers in gutter, E:/W: counts in status bar)
 - [x] Non-blocking channel architecture (maintains 60 FPS)
 - [x] Jump to definition (F12) - works with rust-analyzer and pyright!
-- [ ] Jump back (Shift+F12)
-- [ ] Auto-completion (Tab)
+- [x] Jump back (Alt+F12) - navigate back through jump history
+- [ ] Auto-completion
 
 **Supported Languages:**
 - Rust (rust-analyzer)

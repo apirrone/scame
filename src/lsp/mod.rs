@@ -10,7 +10,7 @@ pub use completion::CompletionPopup;
 pub use config::Language;
 pub use diagnostics::DiagnosticsStore;
 pub use manager::LspManager;
-pub use navigation::NavigationStack;
+pub use navigation::NavigationHistory;
 pub use protocol::{
     BufferId, CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Location,
     LspRequest, LspResponse, Position,

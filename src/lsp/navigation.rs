@@ -1,12 +1,4 @@
-use std::path::PathBuf;
-
-/// Represents a location in a file
-#[derive(Debug, Clone)]
-pub struct Location {
-    pub path: PathBuf,
-    pub line: usize,
-    pub column: usize,
-}
+use crate::lsp::protocol::Location;
 
 /// Navigation history for jump back functionality
 /// Maintains a stack of previous cursor positions when jumping to definitions
@@ -66,6 +58,8 @@ impl Default for NavigationHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::protocol::Position;
+    use std::path::PathBuf;
 
     #[test]
     fn test_push_pop() {
@@ -73,14 +67,12 @@ mod tests {
 
         let loc1 = Location {
             path: PathBuf::from("file1.rs"),
-            line: 10,
-            column: 5,
+            position: Position::new(10, 5),
         };
 
         let loc2 = Location {
             path: PathBuf::from("file2.rs"),
-            line: 20,
-            column: 15,
+            position: Position::new(20, 15),
         };
 
         history.push(loc1.clone());
@@ -90,11 +82,11 @@ mod tests {
 
         let popped = history.pop().unwrap();
         assert_eq!(popped.path, loc2.path);
-        assert_eq!(popped.line, loc2.line);
+        assert_eq!(popped.position.line, loc2.position.line);
 
         let popped = history.pop().unwrap();
         assert_eq!(popped.path, loc1.path);
-        assert_eq!(popped.line, loc1.line);
+        assert_eq!(popped.position.line, loc1.position.line);
 
         assert!(history.is_empty());
         assert!(history.pop().is_none());
@@ -108,8 +100,7 @@ mod tests {
         for i in 0..60 {
             history.push(Location {
                 path: PathBuf::from(format!("file{}.rs", i)),
-                line: i,
-                column: 0,
+                position: Position::new(i, 0),
             });
         }
 
