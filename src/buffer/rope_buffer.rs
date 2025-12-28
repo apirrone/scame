@@ -175,6 +175,11 @@ impl TextBuffer {
         self.rope.len_lines()
     }
 
+    /// Convert a line number to a byte offset
+    pub fn line_to_byte(&self, line: usize) -> usize {
+        self.rope.line_to_byte(line)
+    }
+
     /// Get the number of characters
     pub fn len_chars(&self) -> usize {
         self.rope.len_chars()

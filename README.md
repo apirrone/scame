@@ -1,10 +1,10 @@
-# Fast Terminal Text Editor
+# scame - Fast Terminal Text Editor
 
 A super-fast terminal-based text editor/IDE written in Rust with minimal dependencies.
 
-## Current Status: Phase 2 Complete ✅
+## Current Status: Phase 3 Complete ✅
 
-### Implemented Features (Phases 1 & 2)
+### Implemented Features (Phases 1, 2 & 3)
 
 **Core Text Editing:**
 - ✅ Open and edit single files
@@ -36,6 +36,7 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+Z` - Undo
 - `Ctrl+Shift+Z` - Redo
 - `Ctrl+X Ctrl+S` - Save file (Emacs style - press Ctrl+X, then Ctrl+S)
+- `Ctrl+X Ctrl+C` - Exit editor (Emacs style - press Ctrl+X, then Ctrl+C)
 - `Ctrl+Q` - Quit (press twice if file is modified)
 - `Home/End` - Line start/end
 - `Page Up/Down` - Page scrolling
@@ -52,7 +53,7 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ **Smart .gitignore support** - automatically excludes ignored files/folders
 - ✅ Emacs-style file backups (creates `~backup` files automatically)
 - ✅ Buffer switching: `Ctrl+Tab` (next), `Ctrl+Shift+Tab` (previous)
-- ✅ Open directory as project: `./text_editor .` or `./text_editor /path/to/project`
+- ✅ Open directory as project: `./scame .` or `./scame /path/to/project`
 
 **New Keyboard Shortcuts:**
 - `Ctrl+P` - Fuzzy file picker (type to search, Enter to open, Esc to cancel)
@@ -62,6 +63,15 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+Tab` - Switch to next buffer
 - `Ctrl+Shift+Tab` - Switch to previous buffer
 - Arrow keys in file picker to navigate results
+
+**Syntax Highlighting (NEW in Phase 3):**
+- ✅ Tree-sitter powered syntax highlighting
+- ✅ **Python support** - Full syntax highlighting for `.py` files
+- ✅ **Rust support** - Full syntax highlighting for `.rs` files
+- ✅ VS Code Dark+ inspired color theme
+- ✅ Automatic language detection from file extension
+- ✅ Smart caching for performance
+- ✅ Graceful fallback if highlighting fails
 
 ## Building and Running
 
@@ -74,13 +84,13 @@ cargo run --release
 
 # Open a specific file
 cargo run --release -- test.txt
-./target/release/text_editor test.txt
+./target/release/scame test.txt
 ```
 
 ## Project Architecture
 
 ```
-text_editor/
+scame/
 ├── src/
 │   ├── buffer/          # Text buffer with rope data structure
 │   │   ├── rope_buffer.rs  # Core text operations (O(log n))
@@ -111,11 +121,11 @@ text_editor/
 - [x] Emacs-style file backups (~backup files)
 - [x] Buffer switching keybindings
 
-### Phase 3: Syntax Highlighting
-- [ ] Tree-sitter integration
-- [ ] Python syntax highlighting
-- [ ] Rust syntax highlighting
-- [ ] Color themes
+### Phase 3: Syntax Highlighting ✅ COMPLETE
+- [x] Tree-sitter integration
+- [x] Python syntax highlighting
+- [x] Rust syntax highlighting
+- [x] Color themes
 
 ### Phase 4: Search Features
 - [ ] Global search (Ctrl+S/Ctrl+R)

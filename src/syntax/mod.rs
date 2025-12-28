@@ -1,2 +1,7 @@
-// Syntax highlighting with tree-sitter
-// To be implemented in Phase 3
+pub mod highlighter;
+pub mod languages;
+pub mod theme;
+
+pub use highlighter::{HighlightSpan, Highlighter};
+pub use languages::SupportedLanguage;
+pub use theme::{Theme, TokenType};

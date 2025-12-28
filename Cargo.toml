@@ -1,5 +1,5 @@
 [package]
-name = "text_editor"
+name = "scame"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,8 +11,8 @@ crossterm = "0.27"
 ropey = "1.6"
 
 # Syntax highlighting
-tree-sitter = "0.20"
-tree-sitter-python = "0.20"
+tree-sitter = "0.22"
+tree-sitter-python = "0.21"
 tree-sitter-rust = "0.21"
 
 # LSP client

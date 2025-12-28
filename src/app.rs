@@ -1,8 +1,10 @@
 use crate::backup::BackupManager;
 use crate::buffer::{Change, Position};
 use crate::editor::movement::Movement;
+use crate::logger;
 use crate::render::{BufferView, FilePicker, StatusBar, Terminal};
 use crate::search::{FileSearch, FileSearchResult};
+use crate::syntax::{HighlightSpan, Highlighter, SupportedLanguage};
 use crate::workspace::{FileTree, Workspace};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -25,6 +27,7 @@ pub struct App {
     backup_manager: BackupManager,
     file_tree: Option<FileTree>,
     file_search: FileSearch,
+    highlighter: Highlighter,
     mode: AppMode,
     message: Option<String>,
     show_line_numbers: bool,
@@ -36,6 +39,8 @@ pub struct App {
     file_picker_pattern: String,
     file_picker_results: Vec<FileSearchResult>,
     file_picker_selected: usize,
+    // Track if we've logged highlighting info for this file
+    logged_highlighting: bool,
 }
 
 impl App {
@@ -52,7 +57,9 @@ impl App {
             backup_manager: BackupManager::new(),
             file_tree: None,
             file_search: FileSearch::new(),
+            highlighter: Highlighter::new(),
             mode: AppMode::Normal,
+            logged_highlighting: false,
             message: None,
             show_line_numbers: true,
             quit_attempts: 0,
@@ -85,6 +92,7 @@ impl App {
                 backup_manager: BackupManager::new(),
                 file_tree: Some(file_tree),
                 file_search: FileSearch::new(),
+                highlighter: Highlighter::new(),
                 mode: AppMode::Normal,
                 message: None,
                 show_line_numbers: true,
@@ -94,6 +102,7 @@ impl App {
                 file_picker_pattern: String::new(),
                 file_picker_results: Vec::new(),
                 file_picker_selected: 0,
+                logged_highlighting: false,
             });
         }
 
@@ -102,7 +111,9 @@ impl App {
             backup_manager: BackupManager::new(),
             file_tree: None,
             file_search: FileSearch::new(),
+            highlighter: Highlighter::new(),
             mode: AppMode::Normal,
+            logged_highlighting: false,
             message: None,
             show_line_numbers: true,
             quit_attempts: 0,
@@ -115,13 +126,84 @@ impl App {
     }
 
     /// Render the application
-    pub fn render(&self, terminal: &Terminal) -> Result<()> {
+    pub fn render(&mut self, terminal: &Terminal) -> Result<()> {
         if let Some(buffer) = self.workspace.active_buffer() {
+            // Get syntax highlighting if supported
+            let highlight_spans = if let Some(path) = buffer.file_path() {
+                if !self.logged_highlighting {
+                    logger::log(&format!("File path detected: {:?}", path));
+                }
+                if let Some(lang) = SupportedLanguage::from_path(path) {
+                    if !self.logged_highlighting {
+                        logger::log(&format!("Language detected: {:?}", lang));
+                    }
+                    // Try to get syntax highlighting, but don't fail if it doesn't work
+                    match (|| -> anyhow::Result<Vec<HighlightSpan>> {
+                        if !self.logged_highlighting {
+                            logger::log("Setting language...");
+                        }
+                        self.highlighter.set_language(&lang.language())?;
+                        if !self.logged_highlighting {
+                            logger::log("Getting text...");
+                        }
+                        let text = buffer.text_buffer().to_string();
+                        let file_id = path.to_string_lossy().to_string();
+                        if !self.logged_highlighting {
+                            logger::log(&format!("Text length: {}", text.len()));
+                            logger::log("Creating query...");
+                        }
+                        let query = lang.query()?;
+                        if !self.logged_highlighting {
+                            logger::log("Getting capture names...");
+                        }
+                        let capture_names = lang.capture_names()?;
+                        if !self.logged_highlighting {
+                            logger::log("Running highlighter...");
+                        }
+                        let result = self.highlighter.highlight(&text, &file_id, &query, &capture_names)?;
+                        if !self.logged_highlighting {
+                            logger::log(&format!("Got {} highlight spans", result.len()));
+                        }
+                        Ok(result)
+                    })() {
+                        Ok(spans) => {
+                            if !self.logged_highlighting {
+                                logger::log("Highlighting successful!");
+                                self.logged_highlighting = true;
+                            }
+                            Some(spans)
+                        },
+                        Err(e) => {
+                            // Log error but don't crash
+                            if !self.logged_highlighting {
+                                logger::log(&format!("ERROR: Syntax highlighting failed: {}", e));
+                                self.logged_highlighting = true;
+                            }
+                            None
+                        }
+                    }
+                } else {
+                    if !self.logged_highlighting {
+                        logger::log(&format!("No language detected for path: {:?}", path));
+                        self.logged_highlighting = true;
+                    }
+                    None
+                }
+            } else {
+                if !self.logged_highlighting {
+                    logger::log("No file path in buffer");
+                    self.logged_highlighting = true;
+                }
+                None
+            };
+
             BufferView::render(
                 terminal,
                 buffer.text_buffer(),
                 buffer.editor_state(),
                 self.show_line_numbers,
+                highlight_spans.as_deref(),
+                self.highlighter.theme(),
             )?;
             StatusBar::render(
                 terminal,
@@ -247,7 +329,7 @@ impl App {
             return Ok(ControlFlow::Continue);
         };
 
-        // Handle Ctrl+X Ctrl+S (Emacs-style save)
+        // Handle Ctrl+X Ctrl+S (Emacs-style save) and Ctrl+X Ctrl+C (Emacs-style exit)
         if self.waiting_for_second_key {
             self.waiting_for_second_key = false;
             if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -260,8 +342,17 @@ impl App {
                     self.message = Some("No file path set".to_string());
                 }
                 return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X Ctrl+C - Exit
+                if self.workspace.has_modified_buffers() && self.quit_attempts == 0 {
+                    self.quit_attempts += 1;
+                    self.message = Some("Buffers modified! Press Ctrl+X Ctrl+C again to quit without saving".to_string());
+                    self.waiting_for_second_key = true; // Keep waiting for second key
+                    return Ok(ControlFlow::Continue);
+                }
+                return Ok(ControlFlow::Exit);
             }
-            // If not Ctrl+S, fall through to handle the key normally
+            // If not Ctrl+S or Ctrl+C, fall through to handle the key normally
         }
 
         match (key.code, key.modifiers) {
@@ -304,7 +395,7 @@ impl App {
                 self.workspace.previous_buffer();
             }
 
-            // Ctrl+X - Start Emacs-style chord (Ctrl+X Ctrl+S for save)
+            // Ctrl+X - Start Emacs-style chord (Ctrl+X Ctrl+S for save, Ctrl+X Ctrl+C to exit)
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                 self.waiting_for_second_key = true;
                 self.message = Some("Ctrl+X-".to_string());

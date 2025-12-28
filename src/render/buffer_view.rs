@@ -1,6 +1,7 @@
 use crate::buffer::TextBuffer;
 use crate::editor::EditorState;
 use crate::render::terminal::Terminal;
+use crate::syntax::{HighlightSpan, Theme};
 use anyhow::Result;
 use crossterm::style::Color;
 
@@ -13,6 +14,8 @@ impl BufferView {
         buffer: &TextBuffer,
         state: &EditorState,
         show_line_numbers: bool,
+        highlight_spans: Option<&[HighlightSpan]>,
+        theme: &Theme,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -52,7 +55,7 @@ impl BufferView {
                 let line = line.trim_end_matches(&['\n', '\r'][..]);
 
                 // Render the line with selection highlighting if applicable
-                Self::render_line(terminal, line, buffer_line, state, line_number_width)?;
+                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme)?;
             }
         }
 
@@ -81,45 +84,118 @@ impl BufferView {
         line_num: usize,
         state: &EditorState,
         _line_number_width: u16,
+        buffer: &TextBuffer,
+        highlight_spans: Option<&[HighlightSpan]>,
+        theme: &Theme,
     ) -> Result<()> {
-        // Check if this line has a selection
-        if let Some(selection) = &state.selection {
+        // Calculate byte offset for this line in the buffer
+        let line_start_byte = buffer.line_to_byte(line_num);
+        let line_end_byte = line_start_byte + line.len();
+
+        // Get selection range for this line
+        let selection_range = if let Some(selection) = &state.selection {
             let (start, end) = selection.range();
-
             if line_num >= start.line && line_num <= end.line {
-                // This line has selection
                 let start_col = if line_num == start.line { start.column } else { 0 };
-                let end_col = if line_num == end.line {
-                    end.column
-                } else {
-                    line.len()
-                };
+                let end_col = if line_num == end.line { end.column } else { line.len() };
+                Some((start_col, end_col))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-                // Before selection
+        // If no syntax highlighting, use simple rendering
+        if highlight_spans.is_none() {
+            if let Some((start_col, end_col)) = selection_range {
+                // Render with selection only
                 if start_col > 0 {
                     terminal.print(&line[..start_col.min(line.len())])?;
                 }
-
-                // Selection
                 if end_col > start_col && start_col < line.len() {
                     terminal.set_bg(Color::DarkGrey)?;
                     terminal.set_fg(Color::White)?;
-                    let sel_end = end_col.min(line.len());
-                    terminal.print(&line[start_col..sel_end])?;
+                    terminal.print(&line[start_col..end_col.min(line.len())])?;
                     terminal.reset_color()?;
                 }
-
-                // After selection
                 if end_col < line.len() {
                     terminal.print(&line[end_col..])?;
                 }
+            } else {
+                terminal.print(line)?;
+            }
+            return Ok(());
+        }
 
-                return Ok(());
+        // Render with syntax highlighting
+        let spans = highlight_spans.unwrap();
+        let mut current_pos = 0;
+        let mut current_color: Option<Color> = None;
+
+        // Filter spans that overlap with this line
+        let line_spans: Vec<_> = spans
+            .iter()
+            .filter(|span| span.start_byte < line_end_byte && span.end_byte > line_start_byte)
+            .collect();
+
+        for byte_offset in 0..line.len() {
+            let absolute_byte = line_start_byte + byte_offset;
+            let is_selected = selection_range
+                .map(|(start, end)| byte_offset >= start && byte_offset < end)
+                .unwrap_or(false);
+
+            // Find the span for this byte
+            let token_color = if !is_selected {
+                line_spans
+                    .iter()
+                    .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
+                    .map(|span| theme.color_for(span.token_type))
+            } else {
+                None
+            };
+
+            // If color changed, flush previous segment
+            if token_color != current_color {
+                if current_pos < byte_offset {
+                    // Flush previous segment
+                    if current_color.is_some() || selection_range.is_some() {
+                        terminal.reset_color()?;
+                    }
+                    if let Some((start, end)) = selection_range {
+                        if current_pos >= start && current_pos < end {
+                            terminal.set_bg(Color::DarkGrey)?;
+                            terminal.set_fg(Color::White)?;
+                        } else if let Some(color) = current_color {
+                            terminal.set_fg(color)?;
+                        }
+                    } else if let Some(color) = current_color {
+                        terminal.set_fg(color)?;
+                    }
+                    terminal.print(&line[current_pos..byte_offset])?;
+                }
+                current_color = token_color;
+                current_pos = byte_offset;
             }
         }
 
-        // No selection, just print the line
-        terminal.print(line)?;
+        // Flush remaining segment
+        if current_pos < line.len() {
+            terminal.reset_color()?;
+            if let Some((start, end)) = selection_range {
+                if current_pos >= start && current_pos < end {
+                    terminal.set_bg(Color::DarkGrey)?;
+                    terminal.set_fg(Color::White)?;
+                } else if let Some(color) = current_color {
+                    terminal.set_fg(color)?;
+                }
+            } else if let Some(color) = current_color {
+                terminal.set_fg(color)?;
+            }
+            terminal.print(&line[current_pos..])?;
+        }
+
+        terminal.reset_color()?;
         Ok(())
     }
 

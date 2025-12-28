@@ -1,6 +1,7 @@
 mod app;
 mod buffer;
 mod editor;
+mod logger;
 mod render;
 
 // Stub modules for future implementation
@@ -20,6 +21,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
+    // Initialize logger
+    logger::init();
+
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 
@@ -55,6 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     // Cleanup
     terminal.cleanup()?;
+    logger::close();
 
     Ok(())
 }
