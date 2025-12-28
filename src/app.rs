@@ -21,6 +21,7 @@ pub enum AppMode {
     Normal,
     FilePicker,
     ConfirmExit,
+    Search,
 }
 
 pub struct App {
@@ -44,6 +45,10 @@ pub struct App {
     // Cache highlight spans to avoid re-parsing every frame
     cached_highlights: Option<Vec<HighlightSpan>>,
     cached_text_hash: u64,
+    // Search state
+    search_pattern: String,
+    search_start_pos: Option<Position>,
+    search_is_reverse: bool,
 }
 
 impl App {
@@ -81,6 +86,9 @@ impl App {
             file_picker_pattern: String::new(),
             file_picker_results: Vec::new(),
             file_picker_selected: 0,
+            search_pattern: String::new(),
+            search_start_pos: None,
+            search_is_reverse: false,
         })
     }
 
@@ -117,6 +125,9 @@ impl App {
                 logged_highlighting: false,
                 cached_highlights: None,
                 cached_text_hash: 0,
+                search_pattern: String::new(),
+                search_start_pos: None,
+                search_is_reverse: false,
             });
         }
 
@@ -137,6 +148,9 @@ impl App {
             file_picker_pattern: String::new(),
             file_picker_results: Vec::new(),
             file_picker_selected: 0,
+            search_pattern: String::new(),
+            search_start_pos: None,
+            search_is_reverse: false,
         })
     }
 
@@ -272,14 +286,21 @@ impl App {
             AppMode::Normal => self.handle_normal_mode(key),
             AppMode::FilePicker => self.handle_file_picker_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
+            AppMode::Search => self.handle_search_mode(key),
         }
     }
 
     /// Handle key in file picker mode
     fn handle_file_picker_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Esc => {
                 // Cancel file picker
+                self.mode = AppMode::Normal;
+                self.file_picker_pattern.clear();
+                self.file_picker_results.clear();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel file picker (Emacs style)
                 self.mode = AppMode::Normal;
                 self.file_picker_pattern.clear();
                 self.file_picker_results.clear();
@@ -346,8 +367,13 @@ impl App {
                 // Exit without saving
                 return Ok(ControlFlow::Exit);
             }
-            KeyCode::Esc | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Esc => {
                 // Cancel and return to normal mode
+                self.mode = AppMode::Normal;
+                self.message = None;
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel and return to normal mode (Emacs style)
                 self.mode = AppMode::Normal;
                 self.message = None;
             }
@@ -358,6 +384,193 @@ impl App {
             }
         }
         Ok(ControlFlow::Continue)
+    }
+
+    /// Handle key in search mode
+    fn handle_search_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel search
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel search (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+S in search mode: search forward for next occurrence
+                if !self.search_pattern.is_empty() {
+                    self.search_is_reverse = false;
+                    // Save current position in case search fails
+                    let saved_pos = if let Some(buffer) = self.workspace.active_buffer() {
+                        Some(buffer.editor_state().cursor.position())
+                    } else {
+                        None
+                    };
+
+                    // Move cursor forward by one character to find next match
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        let current_pos = buffer.editor_state().cursor.position();
+                        let text_buffer = buffer.text_buffer();
+                        let current_char = text_buffer.pos_to_char(current_pos)?;
+                        let new_pos = text_buffer.char_to_pos(current_char + 1);
+                        buffer.editor_state_mut().cursor.set_position(new_pos);
+                    }
+
+                    // Try to search
+                    if !self.perform_search()? {
+                        // No match found, restore position and show message
+                        if let Some(pos) = saved_pos {
+                            self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(pos);
+                        }
+                        self.message = Some("Last occurrence".to_string());
+                    }
+                }
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+R in search mode: search backward for previous occurrence
+                if !self.search_pattern.is_empty() {
+                    self.search_is_reverse = true;
+                    // Save current position in case search fails
+                    let saved_pos = if let Some(buffer) = self.workspace.active_buffer() {
+                        Some(buffer.editor_state().cursor.position())
+                    } else {
+                        None
+                    };
+
+                    // Move cursor backward by one character to find previous match
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        let current_pos = buffer.editor_state().cursor.position();
+                        let text_buffer = buffer.text_buffer();
+                        let current_char = text_buffer.pos_to_char(current_pos)?;
+                        if current_char > 0 {
+                            let new_pos = text_buffer.char_to_pos(current_char - 1);
+                            buffer.editor_state_mut().cursor.set_position(new_pos);
+                        }
+                    }
+
+                    // Try to search
+                    if !self.perform_search()? {
+                        // No match found, restore position and show message
+                        if let Some(pos) = saved_pos {
+                            self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(pos);
+                        }
+                        self.message = Some("First occurrence".to_string());
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Enter: exit search mode
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                // Arrow keys: exit search mode and handle the movement in normal mode
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+                // Re-handle the key event in normal mode
+                return self.handle_normal_mode(key);
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Add character to search pattern
+                self.search_pattern.push(c);
+                // Update message to show current pattern
+                let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
+                self.message = Some(format!("{}: {}", search_type, self.search_pattern));
+                // Incremental search - search as we type
+                if !self.search_pattern.is_empty() {
+                    let _ = self.perform_search(); // Ignore errors for incremental search
+                }
+            }
+            KeyCode::Backspace => {
+                self.search_pattern.pop();
+                // Update message to show current pattern
+                let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
+                self.message = Some(format!("{}: {}", search_type, self.search_pattern));
+                // Reset to start position when pattern changes
+                if let Some(buffer) = self.workspace.active_buffer() {
+                    if let Some(start_pos) = self.search_start_pos {
+                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Perform search from current cursor position
+    /// Returns true if a match was found, false otherwise
+    fn perform_search(&mut self) -> Result<bool> {
+        let Some(buffer) = self.workspace.active_buffer_mut() else {
+            return Ok(false);
+        };
+
+        let text = buffer.text_buffer().to_string();
+        let current_pos = buffer.editor_state().cursor.position();
+        let current_char_idx = buffer.text_buffer().pos_to_char(current_pos)?;
+
+        // Case-insensitive search: convert both text and pattern to lowercase
+        let text_lower = text.to_lowercase();
+        let pattern_lower = self.search_pattern.to_lowercase();
+
+        // Search forward or backward
+        let found_char_idx = if self.search_is_reverse {
+            // Reverse search - search before current position
+            let before_chars: String = text_lower.chars().take(current_char_idx).collect();
+            before_chars.rfind(&pattern_lower).map(|byte_offset| {
+                // Convert byte offset to char offset
+                before_chars[..byte_offset].chars().count()
+            })
+        } else {
+            // Forward search (start from next character)
+            let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
+            after_chars.find(&pattern_lower).map(|byte_offset| {
+                // Convert byte offset to char offset, then add current position
+                current_char_idx + after_chars[..byte_offset].chars().count()
+            })
+        };
+
+        if let Some(char_idx) = found_char_idx {
+            let pos = buffer.text_buffer().char_to_pos(char_idx);
+
+            // Move cursor to found position
+            buffer.editor_state_mut().cursor.set_position(pos);
+            buffer.editor_state_mut().ensure_cursor_visible();
+
+            // Select the found text
+            let pattern_char_len = self.search_pattern.chars().count();
+            let end_char_idx = char_idx + pattern_char_len;
+            let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
+            buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
+
+            self.message = Some(format!("Found: {}", self.search_pattern));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Handle key in normal mode
@@ -419,6 +632,24 @@ impl App {
                 } else {
                     self.message = Some("No project directory open".to_string());
                 }
+            }
+
+            // Ctrl+S - Search forward
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                self.mode = AppMode::Search;
+                self.search_pattern.clear();
+                self.search_start_pos = Some(buffer.editor_state().cursor.position());
+                self.search_is_reverse = false;
+                self.message = Some("Search:".to_string());
+            }
+
+            // Ctrl+R - Search reverse
+            (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
+                self.mode = AppMode::Search;
+                self.search_pattern.clear();
+                self.search_start_pos = Some(buffer.editor_state().cursor.position());
+                self.search_is_reverse = true;
+                self.message = Some("Reverse search:".to_string());
             }
 
             // Ctrl+Tab - Next buffer

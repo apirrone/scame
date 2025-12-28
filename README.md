@@ -60,7 +60,21 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+X Ctrl+C` - Exit editor (Emacs style - press Ctrl+X, then Ctrl+C)
 - `Ctrl+Q` - Quit (with save prompt if modified)
 
-**Note:** `Ctrl+S` is now reserved for future search functionality
+*Search (Emacs-style):*
+- `Ctrl+S` - Search forward (incremental, case-insensitive)
+  - Press `Ctrl+S` again to find next occurrence forward
+  - Shows "Last occurrence" when no more matches found
+- `Ctrl+R` - Search backward/reverse (incremental, case-insensitive)
+  - Press `Ctrl+R` again to find next occurrence backward
+  - Shows "First occurrence" when no more matches found
+- `Enter`, `Esc`, `Ctrl+G`, or arrow keys - Exit search mode (clears selection)
+- Type to search as you go, backspace to edit pattern
+- Found text is highlighted while searching
+- Search is always case-insensitive
+
+*Universal Cancel:*
+- `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
+- Arrow keys in search mode - Exit search and move cursor
 
 **Note:** Block cursor is always visible and indicates current position.
 
@@ -73,7 +87,7 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ Open directory as project: `./scame .` or `./scame /path/to/project`
 
 **New Keyboard Shortcuts:**
-- `Ctrl+P` - Fuzzy file picker (type to search, Enter to open, Esc to cancel)
+- `Ctrl+P` - Fuzzy file picker (type to search, Enter to open, Esc/Ctrl+G to cancel)
   - **Smart priority**: Prioritizes files with same extension as current file!
   - E.g., in a `.py` file, Python files rank higher in search results
   - **Respects .gitignore**: Won't show ignored files (node_modules, target, etc.)
@@ -89,6 +103,13 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ Automatic language detection from file extension
 - ✅ Smart caching for performance
 - ✅ Graceful fallback if highlighting fails
+
+**Search Features (NEW in Phase 4):**
+- ✅ **Incremental search** - Search as you type (Emacs-style)
+- ✅ **Forward search** (Ctrl+S) - Find text ahead of cursor, press Ctrl+S again to iterate
+- ✅ **Reverse search** (Ctrl+R) - Find text before cursor, press Ctrl+R again to iterate
+- ✅ **Automatic selection** - Found text is highlighted
+- ✅ **Bidirectional iteration** - Switch between forward/backward in same search
 
 ## Building and Running
 
@@ -144,8 +165,9 @@ scame/
 - [x] Rust syntax highlighting
 - [x] Color themes
 
-### Phase 4: Search Features
-- [ ] Global search (Ctrl+S/Ctrl+R)
+### Phase 4: Search Features (In Progress)
+- [x] Global search (Ctrl+S forward, Ctrl+R reverse)
+- [x] Incremental search (search as you type)
 - [ ] Regex search support
 - [ ] Search and replace
 - [ ] Jump to line (Alt+G)
