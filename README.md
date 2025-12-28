@@ -61,34 +61,35 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+Q` - Quit (with save prompt if modified)
 
 *Search (Emacs-style):*
-- `Ctrl+S` - Search forward (incremental, **regex by default**)
+- `Ctrl+S` - Search forward (incremental, **regex by default**, case-insensitive)
   - Press `Ctrl+S` again to find next occurrence forward
   - Shows "Last occurrence" when no more matches found
-- `Ctrl+R` - Search backward/reverse (incremental, **regex by default**)
+- `Ctrl+R` - Search backward/reverse (incremental, **regex by default**, case-insensitive)
   - Press `Ctrl+R` again to find next occurrence backward
   - Shows "First occurrence" when no more matches found
 - `Ctrl+T` - Toggle regex mode (while in search mode)
   - Status bar shows "[REGEX]" indicator when enabled
-  - Press Ctrl+T to switch to plain string search (case-insensitive)
+  - Press Ctrl+T to switch to plain string search
   - Supports full regex patterns (e.g., `\d+`, `[a-z]+`, `\w+`)
 - `Enter`, `Esc`, `Ctrl+G`, or arrow keys - Exit search mode (clears selection)
 - Type to search as you go, backspace to edit pattern
 - Found text is highlighted while searching
-- **Default: Regex mode** (press Ctrl+T for plain string)
+- **Both modes are case-insensitive by default**
 
 *Search and Replace:*
-- `Ctrl+H` - Query-replace (search and replace interactively, **regex by default**)
+- `Ctrl+H` - Query-replace (search and replace interactively, **regex by default**, case-insensitive)
   - Enter search pattern (regex patterns supported, e.g., `\d+`, `[a-z]+`)
   - Press `Ctrl+T` to toggle between regex and plain string mode
   - Enter replacement string
   - For each match: `y` (replace), `n` (skip), `a` (replace all), `q` (quit)
   - Shows count of replacements made
   - Status bar shows "[REGEX]" indicator when in regex mode
-  - Plain string mode is case-insensitive
+  - **Both modes are case-insensitive by default**
   - Supports undo (Ctrl+Z after completing replacements)
 
 *Navigation:*
 - `Alt+G` - Jump to line (enter line number, press Enter to jump)
+- `Ctrl+J` - Center view on cursor (Emacs style - scrolls viewport to center cursor vertically)
 
 *Universal Cancel:*
 - `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)

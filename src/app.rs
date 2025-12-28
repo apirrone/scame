@@ -8,7 +8,7 @@ use crate::syntax::{HighlightSpan, Highlighter, SupportedLanguage};
 use crate::workspace::{FileTree, Workspace};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use regex::Regex;
+use regex::RegexBuilder;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -843,8 +843,8 @@ impl App {
 
         // Search using regex or plain string
         let found_match: Option<(usize, usize)> = if self.search_use_regex {
-            // Regex search
-            match Regex::new(&self.search_pattern) {
+            // Regex search (case-insensitive by default)
+            match RegexBuilder::new(&self.search_pattern).case_insensitive(true).build() {
                 Ok(re) => {
                     if self.search_is_reverse {
                         // Reverse regex search - find all matches before cursor
@@ -928,8 +928,8 @@ impl App {
 
         // Search using regex or plain string
         let found_match: Option<(usize, usize)> = if self.search_use_regex {
-            // Regex search
-            match Regex::new(&self.replace_pattern) {
+            // Regex search (case-insensitive by default)
+            match RegexBuilder::new(&self.replace_pattern).case_insensitive(true).build() {
                 Ok(re) => {
                     // Forward search only
                     let after_chars: String = text.chars().skip(current_char_idx).collect();
@@ -1107,6 +1107,12 @@ impl App {
                 self.search_start_pos = Some(buffer.editor_state().cursor.position());
                 self.search_use_regex = true;  // Default to regex mode
                 self.message = Some("Replace [REGEX]:".to_string());
+            }
+
+            // Ctrl+J - Center view on cursor (Emacs style)
+            (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
+                let current_line = buffer.editor_state().cursor.line;
+                buffer.editor_state_mut().viewport.center_on_line(current_line);
             }
 
             // Ctrl+Tab - Next buffer
