@@ -1748,33 +1748,77 @@ impl App {
                 editor_state.ensure_cursor_visible();
             }
 
-            // Tab - Insert 4 spaces
+            // Tab - Smart completion or indentation
             (KeyCode::Tab, KeyModifiers::NONE) => {
-                let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-
-                // If there's a selection, delete it first
-                if let Some(selection) = editor_state.selection {
-                    let (start, end) = selection.range();
-                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
-                        undo_manager.record(Change::Delete {
-                            pos: start,
-                            text: deleted,
-                        });
-                        editor_state.cursor.set_position(start);
-                        editor_state.clear_selection();
+                // Determine if we should trigger completion or indent
+                let should_complete = if let Some(path) = buffer.file_path() {
+                    if crate::lsp::Language::from_path(path).is_some() {
+                        // Check the character before the cursor
+                        let pos = buffer.editor_state().cursor.position();
+                        if let Some(line) = buffer.text_buffer().get_line(pos.line) {
+                            let chars: Vec<char> = line.chars().collect();
+                            if pos.column > 0 && pos.column <= chars.len() {
+                                let prev_char = chars[pos.column - 1];
+                                // Complete after dot or if we're in the middle of a word
+                                prev_char == '.' || prev_char.is_alphanumeric() || prev_char == '_'
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
                     }
-                }
+                } else {
+                    false
+                };
 
-                let pos = editor_state.cursor.position();
-                // Insert 4 spaces
-                text_buffer.insert(pos, "    ")?;
-                undo_manager.record(Change::Insert {
-                    pos,
-                    text: "    ".to_string(),
-                });
-                // Move cursor 4 positions right
-                editor_state.cursor.column += 4;
-                editor_state.ensure_cursor_visible();
+                if should_complete && self.lsp_manager.is_some() {
+                    // Trigger completion (same logic as Ctrl+Space)
+                    if let Some(path) = buffer.file_path() {
+                        if let Some(lsp) = &mut self.lsp_manager {
+                            let pos = buffer.editor_state().cursor.position();
+                            let buffer_id = buffer.id().0;
+                            let lsp_pos = crate::lsp::Position::new(pos.line, pos.column);
+                            match lsp.completion(buffer_id, path.clone(), lsp_pos) {
+                                Ok(_) => {
+                                    self.message = Some(format!("Requesting completions at {}:{}...", pos.line, pos.column));
+                                }
+                                Err(e) => {
+                                    self.message = Some(format!("Completion error: {}", e));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Insert 4 spaces for indentation
+                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                    // If there's a selection, delete it first
+                    if let Some(selection) = editor_state.selection {
+                        let (start, end) = selection.range();
+                        if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                            undo_manager.record(Change::Delete {
+                                pos: start,
+                                text: deleted,
+                            });
+                            editor_state.cursor.set_position(start);
+                            editor_state.clear_selection();
+                        }
+                    }
+
+                    let pos = editor_state.cursor.position();
+                    // Insert 4 spaces
+                    text_buffer.insert(pos, "    ")?;
+                    undo_manager.record(Change::Insert {
+                        pos,
+                        text: "    ".to_string(),
+                    });
+                    // Move cursor 4 positions right
+                    editor_state.cursor.column += 4;
+                    editor_state.ensure_cursor_visible();
+                }
             }
 
             // Regular character input
