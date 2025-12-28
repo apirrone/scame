@@ -208,8 +208,8 @@ impl BufferView {
         let screen_line = state.cursor.line.saturating_sub(state.viewport.top_line);
         let screen_col = state.cursor.column as u16 + line_number_width;
 
+        // Just position the cursor, don't show it yet (done at app level)
         terminal.move_cursor(screen_col, screen_line as u16)?;
-        terminal.show_cursor()?;
 
         Ok(())
     }

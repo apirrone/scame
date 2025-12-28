@@ -41,9 +41,21 @@ pub struct App {
     file_picker_selected: usize,
     // Track if we've logged highlighting info for this file
     logged_highlighting: bool,
+    // Cache highlight spans to avoid re-parsing every frame
+    cached_highlights: Option<Vec<HighlightSpan>>,
+    cached_text_hash: u64,
 }
 
 impl App {
+    /// Simple hash function for text
+    fn simple_hash(text: &str) -> u64 {
+        let mut hash: u64 = 5381;
+        for byte in text.bytes() {
+            hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
+        }
+        hash
+    }
+
     /// Create a new app instance
     pub fn new() -> Result<Self> {
         let (width, height) = crossterm::terminal::size()?;
@@ -60,6 +72,8 @@ impl App {
             highlighter: Highlighter::new(),
             mode: AppMode::Normal,
             logged_highlighting: false,
+            cached_highlights: None,
+            cached_text_hash: 0,
             message: None,
             show_line_numbers: true,
             quit_attempts: 0,
@@ -103,6 +117,8 @@ impl App {
                 file_picker_results: Vec::new(),
                 file_picker_selected: 0,
                 logged_highlighting: false,
+                cached_highlights: None,
+                cached_text_hash: 0,
             });
         }
 
@@ -114,6 +130,8 @@ impl App {
             highlighter: Highlighter::new(),
             mode: AppMode::Normal,
             logged_highlighting: false,
+            cached_highlights: None,
+            cached_text_hash: 0,
             message: None,
             show_line_numbers: true,
             quit_attempts: 0,
@@ -127,73 +145,65 @@ impl App {
 
     /// Render the application
     pub fn render(&mut self, terminal: &Terminal) -> Result<()> {
+        // Hide cursor during rendering to prevent flickering
+        terminal.hide_cursor()?;
+
         if let Some(buffer) = self.workspace.active_buffer() {
-            // Get syntax highlighting if supported
+            // Get syntax highlighting if supported (with caching)
             let highlight_spans = if let Some(path) = buffer.file_path() {
-                if !self.logged_highlighting {
-                    logger::log(&format!("File path detected: {:?}", path));
-                }
                 if let Some(lang) = SupportedLanguage::from_path(path) {
-                    if !self.logged_highlighting {
-                        logger::log(&format!("Language detected: {:?}", lang));
-                    }
-                    // Try to get syntax highlighting, but don't fail if it doesn't work
-                    match (|| -> anyhow::Result<Vec<HighlightSpan>> {
+                    // Compute hash of current text
+                    let text = buffer.text_buffer().to_string();
+                    let text_hash = Self::simple_hash(&text);
+
+                    // Check if we can use cached highlights
+                    if self.cached_text_hash == text_hash && self.cached_highlights.is_some() {
+                        // Use cached highlights
+                        self.cached_highlights.clone()
+                    } else {
+                        // Need to recompute
                         if !self.logged_highlighting {
-                            logger::log("Setting language...");
+                            logger::log(&format!("File path detected: {:?}", path));
+                            logger::log(&format!("Language detected: {:?}", lang));
                         }
-                        self.highlighter.set_language(&lang.language())?;
-                        if !self.logged_highlighting {
-                            logger::log("Getting text...");
-                        }
-                        let text = buffer.text_buffer().to_string();
-                        let file_id = path.to_string_lossy().to_string();
-                        if !self.logged_highlighting {
-                            logger::log(&format!("Text length: {}", text.len()));
-                            logger::log("Creating query...");
-                        }
-                        let query = lang.query()?;
-                        if !self.logged_highlighting {
-                            logger::log("Getting capture names...");
-                        }
-                        let capture_names = lang.capture_names()?;
-                        if !self.logged_highlighting {
-                            logger::log("Running highlighter...");
-                        }
-                        let result = self.highlighter.highlight(&text, &file_id, &query, &capture_names)?;
-                        if !self.logged_highlighting {
-                            logger::log(&format!("Got {} highlight spans", result.len()));
-                        }
-                        Ok(result)
-                    })() {
-                        Ok(spans) => {
+
+                        match (|| -> anyhow::Result<Vec<HighlightSpan>> {
                             if !self.logged_highlighting {
-                                logger::log("Highlighting successful!");
-                                self.logged_highlighting = true;
+                                logger::log("Computing syntax highlighting...");
                             }
-                            Some(spans)
-                        },
-                        Err(e) => {
-                            // Log error but don't crash
+                            self.highlighter.set_language(&lang.language())?;
+                            let file_id = path.to_string_lossy().to_string();
+                            let query = lang.query()?;
+                            let capture_names = lang.capture_names()?;
+                            let result = self.highlighter.highlight(&text, &file_id, &query, &capture_names)?;
                             if !self.logged_highlighting {
-                                logger::log(&format!("ERROR: Syntax highlighting failed: {}", e));
-                                self.logged_highlighting = true;
+                                logger::log(&format!("Got {} highlight spans", result.len()));
                             }
-                            None
+                            Ok(result)
+                        })() {
+                            Ok(spans) => {
+                                if !self.logged_highlighting {
+                                    logger::log("Highlighting successful!");
+                                    self.logged_highlighting = true;
+                                }
+                                // Cache the results
+                                self.cached_highlights = Some(spans.clone());
+                                self.cached_text_hash = text_hash;
+                                Some(spans)
+                            },
+                            Err(e) => {
+                                if !self.logged_highlighting {
+                                    logger::log(&format!("ERROR: Syntax highlighting failed: {}", e));
+                                    self.logged_highlighting = true;
+                                }
+                                None
+                            }
                         }
                     }
                 } else {
-                    if !self.logged_highlighting {
-                        logger::log(&format!("No language detected for path: {:?}", path));
-                        self.logged_highlighting = true;
-                    }
                     None
                 }
             } else {
-                if !self.logged_highlighting {
-                    logger::log("No file path in buffer");
-                    self.logged_highlighting = true;
-                }
                 None
             };
 
@@ -211,6 +221,7 @@ impl App {
                 buffer.editor_state(),
                 self.message.as_deref(),
             )?;
+            // Position cursor (but don't show yet)
             BufferView::position_cursor(
                 terminal,
                 buffer.editor_state(),
@@ -229,7 +240,13 @@ impl App {
             )?;
         }
 
+        // Flush all buffered commands
         terminal.flush()?;
+
+        // Show cursor only after everything is flushed
+        terminal.show_cursor()?;
+        terminal.flush()?;
+
         Ok(())
     }
 
@@ -285,6 +302,10 @@ impl App {
                     self.mode = AppMode::Normal;
                     self.file_picker_pattern.clear();
                     self.file_picker_results.clear();
+                    // Invalidate highlight cache when opening a new file
+                    self.cached_highlights = None;
+                    self.cached_text_hash = 0;
+                    self.logged_highlighting = false;
                 }
             }
             KeyCode::Up => {
@@ -388,11 +409,19 @@ impl App {
             // Ctrl+Tab - Next buffer
             (KeyCode::Tab, KeyModifiers::CONTROL) => {
                 self.workspace.next_buffer();
+                // Invalidate highlight cache when switching buffers
+                self.cached_highlights = None;
+                self.cached_text_hash = 0;
+                self.logged_highlighting = false;
             }
 
             // Ctrl+Shift+Tab - Previous buffer
             (KeyCode::BackTab, _) => {
                 self.workspace.previous_buffer();
+                // Invalidate highlight cache when switching buffers
+                self.cached_highlights = None;
+                self.cached_text_hash = 0;
+                self.logged_highlighting = false;
             }
 
             // Ctrl+X - Start Emacs-style chord (Ctrl+X Ctrl+S for save, Ctrl+X Ctrl+C to exit)
