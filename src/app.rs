@@ -29,6 +29,7 @@ pub enum AppMode {
     ReplacePrompt,      // Prompting for search pattern
     ReplaceEnterRepl,   // Prompting for replacement string
     ReplaceConfirm,     // Confirming each replacement
+    Completion,         // Showing completion suggestions
 }
 
 pub struct App {
@@ -68,6 +69,10 @@ pub struct App {
     lsp_receiver: Option<mpsc::UnboundedReceiver<LspResponse>>,
     diagnostics_store: DiagnosticsStore,
     navigation_history: crate::lsp::NavigationHistory,
+    // Completion state
+    completion_items: Vec<crate::lsp::CompletionItem>,
+    completion_selected: usize,
+    completion_scroll_offset: usize,
 }
 
 impl App {
@@ -117,6 +122,9 @@ impl App {
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
             navigation_history: crate::lsp::NavigationHistory::new(),
+            completion_items: Vec::new(),
+            completion_selected: 0,
+            completion_scroll_offset: 0,
         })
     }
 
@@ -165,6 +173,9 @@ impl App {
                 lsp_receiver: None,
                 diagnostics_store: DiagnosticsStore::new(),
                 navigation_history: crate::lsp::NavigationHistory::new(),
+                completion_items: Vec::new(),
+                completion_selected: 0,
+                completion_scroll_offset: 0,
             });
         }
 
@@ -197,6 +208,9 @@ impl App {
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
             navigation_history: crate::lsp::NavigationHistory::new(),
+            completion_items: Vec::new(),
+            completion_selected: 0,
+            completion_scroll_offset: 0,
         })
     }
 
@@ -302,6 +316,36 @@ impl App {
             )?;
         }
 
+        // Render completion popup if active
+        if self.mode == AppMode::Completion {
+            if let Some(buffer) = self.workspace.active_buffer() {
+                // Calculate screen position of cursor
+                let editor_state = buffer.editor_state();
+                let viewport = &editor_state.viewport;
+                let cursor = &editor_state.cursor;
+
+                // Calculate cursor screen position
+                let show_line_numbers = self.show_line_numbers;
+                let gutter_width = if show_line_numbers {
+                    // Line numbers + space + diagnostic marker
+                    format!("{}", buffer.text_buffer().len_lines()).len() + 3
+                } else {
+                    0
+                };
+
+                let screen_x = (gutter_width + cursor.column).saturating_sub(viewport.left_column);
+                let screen_y = cursor.line.saturating_sub(viewport.top_line) + 1; // +1 for status bar offset
+
+                crate::lsp::CompletionPopup::render(
+                    terminal,
+                    &self.completion_items,
+                    self.completion_selected,
+                    self.completion_scroll_offset,
+                    (screen_x as u16, screen_y as u16),
+                )?;
+            }
+        }
+
         // Flush all buffered commands
         terminal.flush()?;
 
@@ -342,6 +386,7 @@ impl App {
             AppMode::ReplacePrompt => self.handle_replace_prompt_mode(key),
             AppMode::ReplaceEnterRepl => self.handle_replace_enter_repl_mode(key),
             AppMode::ReplaceConfirm => self.handle_replace_confirm_mode(key),
+            AppMode::Completion => self.handle_completion_mode(key),
         }
     }
 
@@ -1036,6 +1081,114 @@ impl App {
         Ok(())
     }
 
+    /// Handle key in completion mode
+    fn handle_completion_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        const MAX_VISIBLE: usize = 10;
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Cancel completion
+                self.mode = AppMode::Normal;
+                self.completion_items.clear();
+                self.completion_selected = 0;
+                self.completion_scroll_offset = 0;
+                self.message = None;
+            }
+            KeyCode::Up => {
+                // Move selection up
+                if self.completion_selected > 0 {
+                    self.completion_selected -= 1;
+                    // Scroll up if needed
+                    if self.completion_selected < self.completion_scroll_offset {
+                        self.completion_scroll_offset = self.completion_selected;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                // Move selection down
+                if self.completion_selected < self.completion_items.len().saturating_sub(1) {
+                    self.completion_selected += 1;
+                    // Scroll down if needed
+                    if self.completion_selected >= self.completion_scroll_offset + MAX_VISIBLE {
+                        self.completion_scroll_offset = self.completion_selected - MAX_VISIBLE + 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Insert selected completion
+                if let Some(item) = self.completion_items.get(self.completion_selected) {
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                        let pos = editor_state.cursor.position();
+
+                        // Find the start of the current word (go back while alphanumeric or underscore)
+                        let line = text_buffer.get_line(pos.line).unwrap_or_default();
+                        let mut word_start_col = pos.column;
+                        let chars: Vec<char> = line.chars().collect();
+
+                        while word_start_col > 0 {
+                            let idx = word_start_col - 1;
+                            if idx < chars.len() {
+                                let ch = chars[idx];
+                                if ch.is_alphanumeric() || ch == '_' {
+                                    word_start_col -= 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Delete the partial word
+                        if word_start_col < pos.column {
+                            let delete_start = crate::buffer::Position::new(pos.line, word_start_col);
+                            let delete_end = pos;
+                            if let Ok(deleted) = text_buffer.delete_range(delete_start, delete_end) {
+                                undo_manager.record(Change::Delete {
+                                    pos: delete_start,
+                                    text: deleted,
+                                });
+                                editor_state.cursor.set_position(delete_start);
+                            }
+                        }
+
+                        // Insert the completion text (use insert_text if available, otherwise label)
+                        let completion_text = item.insert_text.as_ref()
+                            .unwrap_or(&item.label);
+                        let insert_pos = editor_state.cursor.position();
+                        text_buffer.insert(insert_pos, completion_text)?;
+                        undo_manager.record(Change::Insert {
+                            pos: insert_pos,
+                            text: completion_text.to_string(),
+                        });
+
+                        // Move cursor to end of inserted text
+                        editor_state.cursor.column += completion_text.chars().count();
+                        editor_state.ensure_cursor_visible();
+                    }
+
+                    self.message = Some(format!("Inserted: {}", item.label));
+                }
+
+                // Exit completion mode
+                self.mode = AppMode::Normal;
+                self.completion_items.clear();
+                self.completion_selected = 0;
+                self.completion_scroll_offset = 0;
+            }
+            _ => {
+                // Any other key cancels completion and processes normally
+                self.mode = AppMode::Normal;
+                self.completion_items.clear();
+                self.message = None;
+                return self.handle_normal_mode(key);
+            }
+        }
+
+        Ok(ControlFlow::Continue)
+    }
+
     /// Handle key in normal mode
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         let Some(buffer) = self.workspace.active_buffer_mut() else {
@@ -1459,6 +1612,45 @@ impl App {
                 }
             }
 
+            // Ctrl+Space - Trigger auto-completion
+            (KeyCode::Char(' '), KeyModifiers::CONTROL) => {
+                // Debug: Check if we have LSP manager
+                if self.lsp_manager.is_none() {
+                    self.message = Some("DEBUG: No LSP manager".to_string());
+                    return Ok(ControlFlow::Continue);
+                }
+
+                // Debug: Check if we have a file path
+                let path = buffer.file_path();
+                if path.is_none() {
+                    self.message = Some("DEBUG: No file path".to_string());
+                    return Ok(ControlFlow::Continue);
+                }
+                let path = path.unwrap();
+
+                // Debug: Check if language is detected
+                let language = crate::lsp::Language::from_path(path);
+                if language.is_none() {
+                    self.message = Some(format!("DEBUG: No language detected for {:?}", path));
+                    return Ok(ControlFlow::Continue);
+                }
+
+                // Send completion request
+                if let Some(lsp) = &mut self.lsp_manager {
+                    let pos = buffer.editor_state().cursor.position();
+                    let buffer_id = buffer.id().0;
+                    let lsp_pos = crate::lsp::Position::new(pos.line, pos.column);
+                    match lsp.completion(buffer_id, path.clone(), lsp_pos) {
+                        Ok(_) => {
+                            self.message = Some(format!("Requesting completions at {}:{}...", pos.line, pos.column));
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("DEBUG: Completion error: {}", e));
+                        }
+                    }
+                }
+            }
+
             // Backspace
             (KeyCode::Backspace, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
@@ -1680,8 +1872,74 @@ impl App {
                     }
                 }
             }
-            LspResponse::Completion { items: _ } => {
-                // TODO: Show completion popup
+            LspResponse::Completion { mut items } => {
+                if items.is_empty() {
+                    self.message = Some("No completions available".to_string());
+                } else {
+                    // Get the partial word the user has typed
+                    let partial_word = if let Some(buffer) = self.workspace.active_buffer() {
+                        let pos = buffer.editor_state().cursor.position();
+                        if let Some(line) = buffer.text_buffer().get_line(pos.line) {
+                            let chars: Vec<char> = line.chars().collect();
+                            let mut word_start = pos.column;
+                            while word_start > 0 && word_start - 1 < chars.len() {
+                                let ch = chars[word_start - 1];
+                                if ch.is_alphanumeric() || ch == '_' {
+                                    word_start -= 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            if word_start < pos.column && word_start < chars.len() {
+                                chars[word_start..pos.column].iter().collect::<String>().to_lowercase()
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    // Filter and sort completions
+                    // 1. Filter out dunder methods unless user typed "__"
+                    let show_dunder = partial_word.starts_with("__");
+                    if !show_dunder {
+                        items.retain(|item| !item.label.starts_with("__"));
+                    }
+
+                    // 2. Sort by relevance
+                    items.sort_by(|a, b| {
+                        // Prioritize items that start with the partial word
+                        let a_starts = a.label.to_lowercase().starts_with(&partial_word);
+                        let b_starts = b.label.to_lowercase().starts_with(&partial_word);
+
+                        if a_starts != b_starts {
+                            return b_starts.cmp(&a_starts);
+                        }
+
+                        // Then prioritize methods/fields over other types
+                        let a_is_member = matches!(a.kind, Some(crate::lsp::CompletionItemKind::Method) | Some(crate::lsp::CompletionItemKind::Field));
+                        let b_is_member = matches!(b.kind, Some(crate::lsp::CompletionItemKind::Method) | Some(crate::lsp::CompletionItemKind::Field));
+
+                        if a_is_member != b_is_member {
+                            return b_is_member.cmp(&a_is_member);
+                        }
+
+                        // Finally sort alphabetically
+                        a.label.cmp(&b.label)
+                    });
+
+                    self.completion_items = items;
+                    self.completion_selected = 0;
+                    self.completion_scroll_offset = 0;
+                    self.mode = AppMode::Completion;
+                    self.message = Some(format!(
+                        "{} completions (↑↓ to navigate, Enter to select, Esc to cancel)",
+                        self.completion_items.len()
+                    ));
+                }
             }
             LspResponse::Error { message } => {
                 self.message = Some(format!("LSP Error: {}", message));

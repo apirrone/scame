@@ -104,11 +104,28 @@ impl LspManager {
         path: PathBuf,
         position: Position,
     ) -> Result<()> {
-        self.send_request(LspRequest::Completion {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/scame/lsp_debug.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(&mut file, "[MANAGER DEBUG] Sending completion request for buffer {} at {:?} line:{} col:{}", buffer_id, path, position.line, position.column);
+        }
+        let result = self.send_request(LspRequest::Completion {
             buffer_id,
             path,
             position,
-        })
+        });
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/scame/lsp_debug.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(&mut file, "[MANAGER DEBUG] Send result: {:?}", result);
+        }
+        result
     }
 
     /// Shutdown the LSP client

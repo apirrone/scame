@@ -2,9 +2,9 @@
 
 A super-fast terminal-based text editor/IDE written in Rust with minimal dependencies.
 
-## Current Status: Phase 4 Complete ✅
+## Current Status: Phase 5 Complete ✅
 
-### Implemented Features (Phases 1, 2, 3 & 4)
+### Implemented Features (Phases 1, 2, 3, 4 & 5)
 
 **Core Text Editing:**
 - ✅ Open and edit single files
@@ -94,6 +94,12 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `F12` - Jump to definition (LSP - works with Rust/Python when language server installed)
 - `Alt+F12` - Jump back to previous location (navigate back through jump history)
 
+*Code Completion (LSP):*
+- `Ctrl+Space` - Trigger auto-completion suggestions
+  - `↑↓` arrows to navigate suggestions
+  - `Enter` to insert selected completion
+  - `Esc` or `Ctrl+G` to cancel
+
 *Universal Cancel:*
 - `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
 - Arrow keys in search mode - Exit search and move cursor
@@ -132,6 +138,14 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ **Reverse search** (Ctrl+R) - Find text before cursor, press Ctrl+R again to iterate
 - ✅ **Automatic selection** - Found text is highlighted
 - ✅ **Bidirectional iteration** - Switch between forward/backward in same search
+
+**LSP Integration (NEW in Phase 5):**
+- ✅ **Real-time diagnostics** - Errors and warnings displayed inline with colored markers (●)
+- ✅ **Jump to definition** (F12) - Navigate to symbol definitions across files
+- ✅ **Jump back** (Alt+F12) - Return to previous locations (up to 50 levels)
+- ✅ **Auto-completion** (Ctrl+Space) - Intelligent code suggestions with icons
+- ✅ **Language support** - Rust (rust-analyzer) and Python (pyright/pylsp)
+- ✅ **Non-blocking architecture** - Maintains 60 FPS while communicating with language servers
 
 ## Building and Running
 
@@ -194,14 +208,14 @@ scame/
 - [x] Regex search support (Ctrl+T to toggle between regex/plain string)
 - [x] Search and replace (Ctrl+H interactive query-replace) - **Regex by default**
 
-### Phase 5: LSP Integration (IN PROGRESS)
+### Phase 5: LSP Integration ✅ COMPLETE
 - [x] LSP client with tower-lsp (background Tokio task)
 - [x] Text synchronization (didOpen, didChange, didSave)
 - [x] Diagnostics display (● markers in gutter, E:/W: counts in status bar)
 - [x] Non-blocking channel architecture (maintains 60 FPS)
 - [x] Jump to definition (F12) - works with rust-analyzer and pyright!
 - [x] Jump back (Alt+F12) - navigate back through jump history
-- [ ] Auto-completion
+- [x] Auto-completion (Ctrl+Space) - intelligent code suggestions with popup UI
 
 **Supported Languages:**
 - Rust (rust-analyzer)

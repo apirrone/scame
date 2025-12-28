@@ -114,6 +114,14 @@ impl LspClient {
                     dynamic_registration: Some(false),
                     link_support: Some(true),
                 }),
+                completion: Some(lsp_types::CompletionClientCapabilities {
+                    dynamic_registration: Some(false),
+                    completion_item: Some(lsp_types::CompletionItemCapability {
+                        snippet_support: Some(false),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -220,23 +228,42 @@ impl LspClient {
                     return;
                 }
 
-                // Handle goto definition response (skip initialize response)
+                // Handle responses (skip initialize response)
                 // Initialize response has "capabilities" in result, not location data
                 if let Some(result) = value.get("result") {
-                    // Skip non-definition responses (like initialize)
+                    // Skip initialize/capabilities responses
                     if result.get("capabilities").is_some() {
                         lsp_debug!("[LSP DEBUG] Skipping initialize/capabilities response");
                         return;
                     }
                     lsp_debug!("[LSP DEBUG] Result field: {:?}", result);
 
-                    // Check if result is null (no definition found)
+                    // Check if result is null
                     if result.is_null() {
-                        lsp_debug!("[LSP DEBUG] Result is null - no definition found");
-                        let _ = response_tx.send(LspResponse::Error {
-                            message: "No definition found".to_string(),
-                        });
+                        lsp_debug!("[LSP DEBUG] Result is null");
                         return;
+                    }
+
+                    // Try to parse as CompletionResponse first
+                    // CompletionList has "items" field
+                    if let Some(items_field) = result.get("items") {
+                        lsp_debug!("[LSP DEBUG] Detected CompletionList response");
+                        if let Ok(completion_list) = serde_json::from_value::<lsp_types::CompletionList>(result.clone()) {
+                            lsp_debug!("[LSP DEBUG] Successfully parsed CompletionList with {} items", completion_list.items.len());
+                            let items = Self::convert_completion_items(completion_list.items);
+                            let _ = response_tx.send(LspResponse::Completion { items });
+                            return;
+                        }
+                    }
+                    // Try to parse as Vec<CompletionItem>
+                    else if result.is_array() {
+                        lsp_debug!("[LSP DEBUG] Result is array, trying to parse as completions");
+                        if let Ok(completion_items) = serde_json::from_value::<Vec<lsp_types::CompletionItem>>(result.clone()) {
+                            lsp_debug!("[LSP DEBUG] Successfully parsed as Vec<CompletionItem> with {} items", completion_items.len());
+                            let items = Self::convert_completion_items(completion_items);
+                            let _ = response_tx.send(LspResponse::Completion { items });
+                            return;
+                        }
                     }
 
                     // Try to parse as GotoDefinitionResponse
@@ -320,6 +347,31 @@ impl LspClient {
                     _ => DiagnosticSeverity::Information,
                 },
                 message: d.message,
+            })
+            .collect()
+    }
+
+    /// Convert LSP completion items to our internal format
+    fn convert_completion_items(lsp_items: Vec<lsp_types::CompletionItem>) -> Vec<crate::lsp::CompletionItem> {
+        lsp_items
+            .into_iter()
+            .map(|item| crate::lsp::CompletionItem {
+                label: item.label.clone(),
+                kind: item.kind.and_then(|k| match k {
+                    lsp_types::CompletionItemKind::FUNCTION => Some(crate::lsp::CompletionItemKind::Function),
+                    lsp_types::CompletionItemKind::METHOD => Some(crate::lsp::CompletionItemKind::Method),
+                    lsp_types::CompletionItemKind::VARIABLE => Some(crate::lsp::CompletionItemKind::Variable),
+                    lsp_types::CompletionItemKind::FIELD => Some(crate::lsp::CompletionItemKind::Field),
+                    lsp_types::CompletionItemKind::KEYWORD => Some(crate::lsp::CompletionItemKind::Keyword),
+                    lsp_types::CompletionItemKind::MODULE => Some(crate::lsp::CompletionItemKind::Module),
+                    lsp_types::CompletionItemKind::STRUCT => Some(crate::lsp::CompletionItemKind::Struct),
+                    lsp_types::CompletionItemKind::ENUM => Some(crate::lsp::CompletionItemKind::Enum),
+                    lsp_types::CompletionItemKind::INTERFACE => Some(crate::lsp::CompletionItemKind::Interface),
+                    lsp_types::CompletionItemKind::CONSTANT => Some(crate::lsp::CompletionItemKind::Constant),
+                    _ => Some(crate::lsp::CompletionItemKind::Other),
+                }),
+                detail: item.detail.clone(),
+                insert_text: item.insert_text.or_else(|| Some(item.label.clone())),
             })
             .collect()
     }
@@ -472,6 +524,38 @@ impl LspClient {
 
         self.send_request::<lsp_types::request::GotoDefinition>(params).await
     }
+
+    /// Request completion suggestions at a given position
+    async fn completion(&mut self, path: PathBuf, position: Position) -> Result<()> {
+        // Convert to absolute path
+        let abs_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()?.join(&path)
+        };
+
+        lsp_debug!("[LSP DEBUG] Sending completion request for {:?} (absolute: {:?}) at line:{} col:{}", path, abs_path, position.line, position.column);
+
+        let uri = Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path: {:?}", abs_path))?;
+
+        lsp_debug!("[LSP DEBUG] Completion URI: {}", uri);
+
+        let params = lsp_types::CompletionParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: lsp_types::Position {
+                    line: position.line as u32,
+                    character: position.column as u32,
+                },
+            },
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+            context: None,
+        };
+
+        self.send_request::<lsp_types::request::Completion>(params).await
+    }
 }
 
 /// Main LSP task handler
@@ -546,8 +630,24 @@ pub async fn lsp_task_handler(
                     }
                 }
             }
-            LspRequest::Completion { .. } => {
-                // TODO: Implement completion
+            LspRequest::Completion {
+                buffer_id,
+                path,
+                position,
+            } => {
+                lsp_debug!("[TASK HANDLER DEBUG] Received completion request for buffer {} at {:?} line:{} col:{}", buffer_id, path, position.line, position.column);
+                if let Some(lang) = Language::from_path(&path) {
+                    let key = lang.language_id().to_string();
+                    lsp_debug!("[TASK HANDLER DEBUG] Looking for client with key: {}", key);
+                    lsp_debug!("[TASK HANDLER DEBUG] Available clients: {:?}", clients.keys().collect::<Vec<_>>());
+                    if let Some(client) = clients.get_mut(&key) {
+                        lsp_debug!("[TASK HANDLER DEBUG] Found client, calling completion...");
+                        let result = client.completion(path, position).await;
+                        lsp_debug!("[TASK HANDLER DEBUG] Completion call result: {:?}", result);
+                    } else {
+                        lsp_debug!("[TASK HANDLER DEBUG] No client found for key: {}", key);
+                    }
+                }
             }
             LspRequest::Shutdown => {
                 break;

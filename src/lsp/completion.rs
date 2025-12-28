@@ -12,6 +12,7 @@ impl CompletionPopup {
         terminal: &Terminal,
         items: &[CompletionItem],
         selected: usize,
+        scroll_offset: usize,
         cursor_screen_pos: (u16, u16),
     ) -> Result<()> {
         if items.is_empty() {
@@ -35,13 +36,15 @@ impl CompletionPopup {
 
         let popup_x = cursor_x.min(term_width.saturating_sub(popup_width));
 
-        // Render each item
-        for (i, item) in items.iter().take(max_items).enumerate() {
+        // Render visible items (using scroll_offset)
+        let visible_items = items.iter().skip(scroll_offset).take(max_items);
+        for (i, item) in visible_items.enumerate() {
             let y = popup_y + i as u16;
+            let item_index = scroll_offset + i;
             terminal.move_cursor(popup_x, y)?;
 
             // Set background for selected item
-            if i == selected {
+            if item_index == selected {
                 terminal.set_bg(Color::DarkBlue)?;
                 terminal.set_fg(Color::White)?;
             } else {
