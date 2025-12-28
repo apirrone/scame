@@ -8,6 +8,7 @@ use crate::syntax::{HighlightSpan, Highlighter, SupportedLanguage};
 use crate::workspace::{FileTree, Workspace};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use regex::Regex;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +23,10 @@ pub enum AppMode {
     FilePicker,
     ConfirmExit,
     Search,
+    JumpToLine,
+    ReplacePrompt,      // Prompting for search pattern
+    ReplaceEnterRepl,   // Prompting for replacement string
+    ReplaceConfirm,     // Confirming each replacement
 }
 
 pub struct App {
@@ -49,6 +54,13 @@ pub struct App {
     search_pattern: String,
     search_start_pos: Option<Position>,
     search_is_reverse: bool,
+    search_use_regex: bool,
+    // Jump to line state
+    jump_to_line_input: String,
+    // Replace state
+    replace_pattern: String,
+    replace_with: String,
+    replace_count: usize,
 }
 
 impl App {
@@ -89,6 +101,11 @@ impl App {
             search_pattern: String::new(),
             search_start_pos: None,
             search_is_reverse: false,
+            search_use_regex: false,
+            jump_to_line_input: String::new(),
+            replace_pattern: String::new(),
+            replace_with: String::new(),
+            replace_count: 0,
         })
     }
 
@@ -128,6 +145,11 @@ impl App {
                 search_pattern: String::new(),
                 search_start_pos: None,
                 search_is_reverse: false,
+                search_use_regex: false,
+                jump_to_line_input: String::new(),
+                replace_pattern: String::new(),
+                replace_with: String::new(),
+                replace_count: 0,
             });
         }
 
@@ -151,6 +173,11 @@ impl App {
             search_pattern: String::new(),
             search_start_pos: None,
             search_is_reverse: false,
+            search_use_regex: false,
+            jump_to_line_input: String::new(),
+            replace_pattern: String::new(),
+            replace_with: String::new(),
+            replace_count: 0,
         })
     }
 
@@ -287,6 +314,10 @@ impl App {
             AppMode::FilePicker => self.handle_file_picker_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
             AppMode::Search => self.handle_search_mode(key),
+            AppMode::JumpToLine => self.handle_jump_to_line_mode(key),
+            AppMode::ReplacePrompt => self.handle_replace_prompt_mode(key),
+            AppMode::ReplaceEnterRepl => self.handle_replace_enter_repl_mode(key),
+            AppMode::ReplaceConfirm => self.handle_replace_confirm_mode(key),
         }
     }
 
@@ -386,6 +417,268 @@ impl App {
         Ok(ControlFlow::Continue)
     }
 
+    /// Handle key in jump to line mode
+    fn handle_jump_to_line_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel jump to line
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.jump_to_line_input.clear();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel jump to line (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.jump_to_line_input.clear();
+            }
+            KeyCode::Enter => {
+                // Jump to the specified line
+                if let Ok(line_num) = self.jump_to_line_input.parse::<usize>() {
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        let text_buffer = buffer.text_buffer();
+                        let max_line = text_buffer.len_lines().saturating_sub(1);
+
+                        // Line numbers are 1-indexed for users, but 0-indexed internally
+                        let target_line = if line_num > 0 {
+                            (line_num - 1).min(max_line)
+                        } else {
+                            0
+                        };
+
+                        // Jump to the line
+                        let line_len = text_buffer.line_len(target_line);
+                        buffer.editor_state_mut().cursor.move_to(target_line, 0);
+                        buffer.editor_state_mut().ensure_cursor_visible();
+
+                        self.message = Some(format!("Line {}", target_line + 1));
+                    }
+                } else {
+                    self.message = Some("Invalid line number".to_string());
+                }
+
+                self.mode = AppMode::Normal;
+                self.jump_to_line_input.clear();
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                // Add digit to input
+                self.jump_to_line_input.push(c);
+                self.message = Some(format!("Go to line: {}", self.jump_to_line_input));
+            }
+            KeyCode::Backspace => {
+                self.jump_to_line_input.pop();
+                if self.jump_to_line_input.is_empty() {
+                    self.message = Some("Go to line:".to_string());
+                } else {
+                    self.message = Some(format!("Go to line: {}", self.jump_to_line_input));
+                }
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Handle key in replace prompt mode (entering search pattern)
+    fn handle_replace_prompt_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('g') if key.code == KeyCode::Esc || key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Cancel replace
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.replace_pattern.clear();
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+T: Toggle regex mode
+                self.search_use_regex = !self.search_use_regex;
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{}: {}", regex_indicator, self.replace_pattern));
+            }
+            KeyCode::Enter => {
+                if !self.replace_pattern.is_empty() {
+                    // Move to replacement string prompt
+                    self.mode = AppMode::ReplaceEnterRepl;
+                    let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                    self.message = Some(format!("Replace{} \"{}\" with:", regex_indicator, self.replace_pattern));
+                } else {
+                    // Empty pattern, cancel
+                    self.mode = AppMode::Normal;
+                    self.message = None;
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Add character to pattern
+                self.replace_pattern.push(c);
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{}: {}", regex_indicator, self.replace_pattern));
+            }
+            KeyCode::Backspace => {
+                self.replace_pattern.pop();
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{}: {}", regex_indicator, self.replace_pattern));
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Handle key in replace enter replacement mode (entering replacement string)
+    fn handle_replace_enter_repl_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('g') if key.code == KeyCode::Esc || key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Cancel replace
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+T: Toggle regex mode
+                self.search_use_regex = !self.search_use_regex;
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{} \"{}\" with: {}", regex_indicator, self.replace_pattern, self.replace_with));
+            }
+            KeyCode::Enter => {
+                // Start replacing
+                self.replace_count = 0;
+                // Find first occurrence
+                if self.find_next_replace_match()? {
+                    self.mode = AppMode::ReplaceConfirm;
+                    let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                    self.message = Some(format!(
+                        "Replace{} \"{}\" with \"{}\"? (y)es, (n)o, (a)ll, (q)uit",
+                        regex_indicator, self.replace_pattern, self.replace_with
+                    ));
+                } else {
+                    // No matches found
+                    self.mode = AppMode::Normal;
+                    self.message = Some("No matches found".to_string());
+                    self.replace_pattern.clear();
+                    self.replace_with.clear();
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Add character to replacement
+                self.replace_with.push(c);
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{} \"{}\" with: {}", regex_indicator, self.replace_pattern, self.replace_with));
+            }
+            KeyCode::Backspace => {
+                self.replace_with.pop();
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("Replace{} \"{}\" with: {}", regex_indicator, self.replace_pattern, self.replace_with));
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Handle key in replace confirm mode (confirming each replacement)
+    fn handle_replace_confirm_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Yes, replace current match
+                self.perform_replace()?;
+                self.replace_count += 1;
+                // Find next match
+                if self.find_next_replace_match()? {
+                    let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                    self.message = Some(format!(
+                        "Replace{} \"{}\" with \"{}\"? (y)es, (n)o, (a)ll, (q)uit [{} replaced]",
+                        regex_indicator, self.replace_pattern, self.replace_with, self.replace_count
+                    ));
+                } else {
+                    // No more matches
+                    self.mode = AppMode::Normal;
+                    self.message = Some(format!("Replaced {} occurrence(s)", self.replace_count));
+                    self.replace_pattern.clear();
+                    self.replace_with.clear();
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        buffer.editor_state_mut().clear_selection();
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // No, skip this match
+                // Find next match
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    let text_buffer = buffer.text_buffer();
+                    let current_pos = buffer.editor_state().cursor.position();
+                    let current_char = text_buffer.pos_to_char(current_pos)?;
+                    let new_pos = text_buffer.char_to_pos(current_char + 1);
+                    buffer.editor_state_mut().cursor.set_position(new_pos);
+                }
+
+                if self.find_next_replace_match()? {
+                    let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                    self.message = Some(format!(
+                        "Replace{} \"{}\" with \"{}\"? (y)es, (n)o, (a)ll, (q)uit [{} replaced]",
+                        regex_indicator, self.replace_pattern, self.replace_with, self.replace_count
+                    ));
+                } else {
+                    // No more matches
+                    self.mode = AppMode::Normal;
+                    self.message = Some(format!("Replaced {} occurrence(s)", self.replace_count));
+                    self.replace_pattern.clear();
+                    self.replace_with.clear();
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        buffer.editor_state_mut().clear_selection();
+                    }
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Replace all remaining matches
+                loop {
+                    self.perform_replace()?;
+                    self.replace_count += 1;
+
+                    // Move cursor forward
+                    if let Some(buffer) = self.workspace.active_buffer_mut() {
+                        let text_buffer = buffer.text_buffer();
+                        let current_pos = buffer.editor_state().cursor.position();
+                        let current_char = text_buffer.pos_to_char(current_pos)?;
+                        let new_pos = text_buffer.char_to_pos(current_char + self.replace_with.chars().count());
+                        buffer.editor_state_mut().cursor.set_position(new_pos);
+                    }
+
+                    if !self.find_next_replace_match()? {
+                        break;
+                    }
+                }
+
+                // Done replacing all
+                self.mode = AppMode::Normal;
+                self.message = Some(format!("Replaced {} occurrence(s)", self.replace_count));
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                // Quit replacing
+                self.mode = AppMode::Normal;
+                self.message = Some(format!("Replaced {} occurrence(s)", self.replace_count));
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Quit (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = Some(format!("Replaced {} occurrence(s)", self.replace_count));
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
     /// Handle key in search mode
     fn handle_search_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         match key.code {
@@ -471,6 +764,20 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+T: Toggle regex mode
+                self.search_use_regex = !self.search_use_regex;
+                let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
+                // Re-search with new mode if pattern exists
+                if !self.search_pattern.is_empty() {
+                    if let Some(start_pos) = self.search_start_pos {
+                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                    }
+                    let _ = self.perform_search();
+                }
+            }
             KeyCode::Enter => {
                 // Enter: exit search mode
                 self.mode = AppMode::Normal;
@@ -498,7 +805,8 @@ impl App {
                 self.search_pattern.push(c);
                 // Update message to show current pattern
                 let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
-                self.message = Some(format!("{}: {}", search_type, self.search_pattern));
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
                 // Incremental search - search as we type
                 if !self.search_pattern.is_empty() {
                     let _ = self.perform_search(); // Ignore errors for incremental search
@@ -508,7 +816,8 @@ impl App {
                 self.search_pattern.pop();
                 // Update message to show current pattern
                 let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
-                self.message = Some(format!("{}: {}", search_type, self.search_pattern));
+                let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
+                self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
                 // Reset to start position when pattern changes
                 if let Some(buffer) = self.workspace.active_buffer() {
                     if let Some(start_pos) = self.search_start_pos {
@@ -532,28 +841,62 @@ impl App {
         let current_pos = buffer.editor_state().cursor.position();
         let current_char_idx = buffer.text_buffer().pos_to_char(current_pos)?;
 
-        // Case-insensitive search: convert both text and pattern to lowercase
-        let text_lower = text.to_lowercase();
-        let pattern_lower = self.search_pattern.to_lowercase();
-
-        // Search forward or backward
-        let found_char_idx = if self.search_is_reverse {
-            // Reverse search - search before current position
-            let before_chars: String = text_lower.chars().take(current_char_idx).collect();
-            before_chars.rfind(&pattern_lower).map(|byte_offset| {
-                // Convert byte offset to char offset
-                before_chars[..byte_offset].chars().count()
-            })
+        // Search using regex or plain string
+        let found_match: Option<(usize, usize)> = if self.search_use_regex {
+            // Regex search
+            match Regex::new(&self.search_pattern) {
+                Ok(re) => {
+                    if self.search_is_reverse {
+                        // Reverse regex search - find all matches before cursor
+                        let before_chars: String = text.chars().take(current_char_idx).collect();
+                        let mut last_match: Option<(usize, usize)> = None;
+                        for m in re.find_iter(&before_chars) {
+                            let char_start = before_chars[..m.start()].chars().count();
+                            let char_len = before_chars[m.start()..m.end()].chars().count();
+                            last_match = Some((char_start, char_len));
+                        }
+                        last_match
+                    } else {
+                        // Forward regex search
+                        let after_chars: String = text.chars().skip(current_char_idx).collect();
+                        re.find(&after_chars).map(|m| {
+                            let char_start = current_char_idx + after_chars[..m.start()].chars().count();
+                            let char_len = after_chars[m.start()..m.end()].chars().count();
+                            (char_start, char_len)
+                        })
+                    }
+                }
+                Err(_) => {
+                    // Invalid regex, show error
+                    self.message = Some(format!("Invalid regex: {}", self.search_pattern));
+                    return Ok(false);
+                }
+            }
         } else {
-            // Forward search (start from next character)
-            let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
-            after_chars.find(&pattern_lower).map(|byte_offset| {
-                // Convert byte offset to char offset, then add current position
-                current_char_idx + after_chars[..byte_offset].chars().count()
-            })
+            // Plain string search (case-insensitive)
+            let text_lower = text.to_lowercase();
+            let pattern_lower = self.search_pattern.to_lowercase();
+
+            if self.search_is_reverse {
+                // Reverse search - search before current position
+                let before_chars: String = text_lower.chars().take(current_char_idx).collect();
+                before_chars.rfind(&pattern_lower).map(|byte_offset| {
+                    let char_idx = before_chars[..byte_offset].chars().count();
+                    let match_len = self.search_pattern.chars().count();
+                    (char_idx, match_len)
+                })
+            } else {
+                // Forward search (start from next character)
+                let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
+                after_chars.find(&pattern_lower).map(|byte_offset| {
+                    let char_idx = current_char_idx + after_chars[..byte_offset].chars().count();
+                    let match_len = self.search_pattern.chars().count();
+                    (char_idx, match_len)
+                })
+            }
         };
 
-        if let Some(char_idx) = found_char_idx {
+        if let Some((char_idx, match_len)) = found_match {
             let pos = buffer.text_buffer().char_to_pos(char_idx);
 
             // Move cursor to found position
@@ -561,8 +904,7 @@ impl App {
             buffer.editor_state_mut().ensure_cursor_visible();
 
             // Select the found text
-            let pattern_char_len = self.search_pattern.chars().count();
-            let end_char_idx = char_idx + pattern_char_len;
+            let end_char_idx = char_idx + match_len;
             let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
 
@@ -571,6 +913,101 @@ impl App {
         } else {
             Ok(false)
         }
+    }
+
+    /// Find the next match for replacement (forward search only)
+    /// Returns true if a match was found, false otherwise
+    fn find_next_replace_match(&mut self) -> Result<bool> {
+        let Some(buffer) = self.workspace.active_buffer_mut() else {
+            return Ok(false);
+        };
+
+        let text = buffer.text_buffer().to_string();
+        let current_pos = buffer.editor_state().cursor.position();
+        let current_char_idx = buffer.text_buffer().pos_to_char(current_pos)?;
+
+        // Search using regex or plain string
+        let found_match: Option<(usize, usize)> = if self.search_use_regex {
+            // Regex search
+            match Regex::new(&self.replace_pattern) {
+                Ok(re) => {
+                    // Forward search only
+                    let after_chars: String = text.chars().skip(current_char_idx).collect();
+                    re.find(&after_chars).map(|m| {
+                        let char_start = current_char_idx + after_chars[..m.start()].chars().count();
+                        let char_len = after_chars[m.start()..m.end()].chars().count();
+                        (char_start, char_len)
+                    })
+                }
+                Err(_) => {
+                    // Invalid regex, return no match
+                    return Ok(false);
+                }
+            }
+        } else {
+            // Plain string search (case-insensitive)
+            let text_lower = text.to_lowercase();
+            let pattern_lower = self.replace_pattern.to_lowercase();
+
+            // Forward search only
+            let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
+            after_chars.find(&pattern_lower).map(|byte_offset| {
+                let char_idx = current_char_idx + after_chars[..byte_offset].chars().count();
+                let match_len = self.replace_pattern.chars().count();
+                (char_idx, match_len)
+            })
+        };
+
+        if let Some((char_idx, match_len)) = found_match {
+            let pos = buffer.text_buffer().char_to_pos(char_idx);
+
+            // Move cursor to found position
+            buffer.editor_state_mut().cursor.set_position(pos);
+            buffer.editor_state_mut().ensure_cursor_visible();
+
+            // Select the found text
+            let end_char_idx = char_idx + match_len;
+            let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
+            buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Perform the replacement of currently selected text
+    fn perform_replace(&mut self) -> Result<()> {
+        let Some(buffer) = self.workspace.active_buffer_mut() else {
+            return Ok(());
+        };
+
+        // Delete the selected text and insert replacement
+        if let Some(selection) = buffer.editor_state().selection {
+            let (start, end) = selection.range();
+            let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+            // Delete the matched text
+            if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                undo_manager.record(Change::Delete {
+                    pos: start,
+                    text: deleted,
+                });
+
+                // Insert the replacement
+                text_buffer.insert(start, &self.replace_with)?;
+                undo_manager.record(Change::Insert {
+                    pos: start,
+                    text: self.replace_with.clone(),
+                });
+
+                // Move cursor to end of replacement
+                editor_state.cursor.set_position(start);
+                editor_state.ensure_cursor_visible();
+            }
+        }
+
+        Ok(())
     }
 
     /// Handle key in normal mode
@@ -640,7 +1077,8 @@ impl App {
                 self.search_pattern.clear();
                 self.search_start_pos = Some(buffer.editor_state().cursor.position());
                 self.search_is_reverse = false;
-                self.message = Some("Search:".to_string());
+                self.search_use_regex = true;  // Default to regex mode
+                self.message = Some("Search [REGEX]:".to_string());
             }
 
             // Ctrl+R - Search reverse
@@ -649,7 +1087,26 @@ impl App {
                 self.search_pattern.clear();
                 self.search_start_pos = Some(buffer.editor_state().cursor.position());
                 self.search_is_reverse = true;
-                self.message = Some("Reverse search:".to_string());
+                self.search_use_regex = true;  // Default to regex mode
+                self.message = Some("Reverse search [REGEX]:".to_string());
+            }
+
+            // Alt+G - Jump to line
+            (KeyCode::Char('g'), KeyModifiers::ALT) => {
+                self.mode = AppMode::JumpToLine;
+                self.jump_to_line_input.clear();
+                self.message = Some("Go to line:".to_string());
+            }
+
+            // Ctrl+H - Replace (query-replace)
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                self.mode = AppMode::ReplacePrompt;
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                self.replace_count = 0;
+                self.search_start_pos = Some(buffer.editor_state().cursor.position());
+                self.search_use_regex = true;  // Default to regex mode
+                self.message = Some("Replace [REGEX]:".to_string());
             }
 
             // Ctrl+Tab - Next buffer

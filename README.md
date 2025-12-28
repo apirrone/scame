@@ -2,9 +2,9 @@
 
 A super-fast terminal-based text editor/IDE written in Rust with minimal dependencies.
 
-## Current Status: Phase 3 Complete ✅
+## Current Status: Phase 4 Complete ✅
 
-### Implemented Features (Phases 1, 2 & 3)
+### Implemented Features (Phases 1, 2, 3 & 4)
 
 **Core Text Editing:**
 - ✅ Open and edit single files
@@ -61,16 +61,34 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - `Ctrl+Q` - Quit (with save prompt if modified)
 
 *Search (Emacs-style):*
-- `Ctrl+S` - Search forward (incremental, case-insensitive)
+- `Ctrl+S` - Search forward (incremental, **regex by default**)
   - Press `Ctrl+S` again to find next occurrence forward
   - Shows "Last occurrence" when no more matches found
-- `Ctrl+R` - Search backward/reverse (incremental, case-insensitive)
+- `Ctrl+R` - Search backward/reverse (incremental, **regex by default**)
   - Press `Ctrl+R` again to find next occurrence backward
   - Shows "First occurrence" when no more matches found
+- `Ctrl+T` - Toggle regex mode (while in search mode)
+  - Status bar shows "[REGEX]" indicator when enabled
+  - Press Ctrl+T to switch to plain string search (case-insensitive)
+  - Supports full regex patterns (e.g., `\d+`, `[a-z]+`, `\w+`)
 - `Enter`, `Esc`, `Ctrl+G`, or arrow keys - Exit search mode (clears selection)
 - Type to search as you go, backspace to edit pattern
 - Found text is highlighted while searching
-- Search is always case-insensitive
+- **Default: Regex mode** (press Ctrl+T for plain string)
+
+*Search and Replace:*
+- `Ctrl+H` - Query-replace (search and replace interactively, **regex by default**)
+  - Enter search pattern (regex patterns supported, e.g., `\d+`, `[a-z]+`)
+  - Press `Ctrl+T` to toggle between regex and plain string mode
+  - Enter replacement string
+  - For each match: `y` (replace), `n` (skip), `a` (replace all), `q` (quit)
+  - Shows count of replacements made
+  - Status bar shows "[REGEX]" indicator when in regex mode
+  - Plain string mode is case-insensitive
+  - Supports undo (Ctrl+Z after completing replacements)
+
+*Navigation:*
+- `Alt+G` - Jump to line (enter line number, press Enter to jump)
 
 *Universal Cancel:*
 - `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
@@ -165,12 +183,12 @@ scame/
 - [x] Rust syntax highlighting
 - [x] Color themes
 
-### Phase 4: Search Features (In Progress)
-- [x] Global search (Ctrl+S forward, Ctrl+R reverse)
-- [x] Incremental search (search as you type)
-- [ ] Regex search support
-- [ ] Search and replace
-- [ ] Jump to line (Alt+G)
+### Phase 4: Search Features ✅ COMPLETE
+- [x] Global search (Ctrl+S forward, Ctrl+R reverse) - **Regex by default**
+- [x] Incremental search (search as you type) - **Regex by default**
+- [x] Jump to line (Alt+G)
+- [x] Regex search support (Ctrl+T to toggle between regex/plain string)
+- [x] Search and replace (Ctrl+H interactive query-replace) - **Regex by default**
 
 ### Phase 5: LSP Integration
 - [ ] LSP client with tower-lsp
