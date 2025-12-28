@@ -20,6 +20,7 @@ pub enum ControlFlow {
 pub enum AppMode {
     Normal,
     FilePicker,
+    ConfirmExit,
 }
 
 pub struct App {
@@ -31,7 +32,6 @@ pub struct App {
     mode: AppMode,
     message: Option<String>,
     show_line_numbers: bool,
-    quit_attempts: u8,
     clipboard: String,
     // Emacs-style key chord state
     waiting_for_second_key: bool,
@@ -76,7 +76,6 @@ impl App {
             cached_text_hash: 0,
             message: None,
             show_line_numbers: true,
-            quit_attempts: 0,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -110,7 +109,6 @@ impl App {
                 mode: AppMode::Normal,
                 message: None,
                 show_line_numbers: true,
-                quit_attempts: 0,
                 clipboard: String::new(),
                 waiting_for_second_key: false,
                 file_picker_pattern: String::new(),
@@ -134,7 +132,6 @@ impl App {
             cached_text_hash: 0,
             message: None,
             show_line_numbers: true,
-            quit_attempts: 0,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -259,15 +256,6 @@ impl App {
     pub fn handle_event(&mut self, event: Event) -> Result<ControlFlow> {
         match event {
             Event::Key(key_event) => {
-                // Reset quit attempts if not Ctrl+Q
-                if !(key_event.code == KeyCode::Char('q')
-                    && key_event.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    self.quit_attempts = 0;
-                    if self.mode == AppMode::Normal {
-                        self.message = None;
-                    }
-                }
                 self.handle_key(key_event)
             }
             Event::Resize(width, height) => {
@@ -283,6 +271,7 @@ impl App {
         match self.mode {
             AppMode::Normal => self.handle_normal_mode(key),
             AppMode::FilePicker => self.handle_file_picker_mode(key),
+            AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
         }
     }
 
@@ -344,6 +333,33 @@ impl App {
         }
     }
 
+    /// Handle key in confirm exit mode
+    fn handle_confirm_exit_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Save all modified buffers then exit
+                self.workspace.save_all_modified_buffers(&self.backup_manager)?;
+                self.message = Some("Saved all buffers".to_string());
+                return Ok(ControlFlow::Exit);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // Exit without saving
+                return Ok(ControlFlow::Exit);
+            }
+            KeyCode::Esc | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Cancel and return to normal mode
+                self.mode = AppMode::Normal;
+                self.message = None;
+            }
+            _ => {
+                // Any other key cancels
+                self.mode = AppMode::Normal;
+                self.message = None;
+            }
+        }
+        Ok(ControlFlow::Continue)
+    }
+
     /// Handle key in normal mode
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         let Some(buffer) = self.workspace.active_buffer_mut() else {
@@ -365,10 +381,9 @@ impl App {
                 return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+C - Exit
-                if self.workspace.has_modified_buffers() && self.quit_attempts == 0 {
-                    self.quit_attempts += 1;
-                    self.message = Some("Buffers modified! Press Ctrl+X Ctrl+C again to quit without saving".to_string());
-                    self.waiting_for_second_key = true; // Keep waiting for second key
+                if self.workspace.has_modified_buffers() {
+                    self.mode = AppMode::ConfirmExit;
+                    self.message = Some("Save modified buffers? (y/n)".to_string());
                     return Ok(ControlFlow::Continue);
                 }
                 return Ok(ControlFlow::Exit);
@@ -379,9 +394,9 @@ impl App {
         match (key.code, key.modifiers) {
             // Ctrl+Q - Quit
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
-                if self.workspace.has_modified_buffers() && self.quit_attempts == 0 {
-                    self.quit_attempts += 1;
-                    self.message = Some("Buffers modified! Press Ctrl+Q again to quit without saving".to_string());
+                if self.workspace.has_modified_buffers() {
+                    self.mode = AppMode::ConfirmExit;
+                    self.message = Some("Save modified buffers? (y/n)".to_string());
                     return Ok(ControlFlow::Continue);
                 }
                 return Ok(ControlFlow::Exit);
@@ -450,15 +465,40 @@ impl App {
                 }
             }
 
+            // Ctrl+Shift+A - Select to beginning of line
+            (KeyCode::Char(c), mods) if (c == 'a' || c == 'A') &&
+                mods.contains(KeyModifiers::CONTROL) &&
+                mods.contains(KeyModifiers::SHIFT) => {
+                let (_text_buffer, editor_state, _) = buffer.split_mut();
+                editor_state.start_selection();
+                Movement::move_to_line_start(editor_state);
+                editor_state.update_selection();
+            }
+
             // Ctrl+A - Beginning of line
-            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
-                Movement::move_to_line_start(buffer.editor_state_mut());
+            (KeyCode::Char(c), mods) if (c == 'a' || c == 'A') &&
+                mods.contains(KeyModifiers::CONTROL) => {
+                let (_text_buffer, editor_state, _) = buffer.split_mut();
+                Movement::move_to_line_start(editor_state);
+                editor_state.clear_selection();
+            }
+
+            // Ctrl+Shift+E - Select to end of line
+            (KeyCode::Char(c), mods) if (c == 'e' || c == 'E') &&
+                mods.contains(KeyModifiers::CONTROL) &&
+                mods.contains(KeyModifiers::SHIFT) => {
+                let (text_buffer, editor_state, _) = buffer.split_mut();
+                editor_state.start_selection();
+                Movement::move_to_line_end(editor_state, text_buffer);
+                editor_state.update_selection();
             }
 
             // Ctrl+E - End of line
-            (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char(c), mods) if (c == 'e' || c == 'E') &&
+                mods.contains(KeyModifiers::CONTROL) => {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
                 Movement::move_to_line_end(editor_state, text_buffer);
+                editor_state.clear_selection();
             }
 
             // Ctrl+K - Kill line (delete from cursor to end of line)
@@ -531,13 +571,21 @@ impl App {
                 }
             }
 
-            // Arrow keys with optional Shift (selection)
+            // Arrow keys with optional Shift (selection) and Ctrl (word/block movement)
             (KeyCode::Left, mods) => {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.start_selection();
                 }
-                Movement::move_left(editor_state, text_buffer);
+
+                if mods.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Left or Ctrl+Shift+Left: move by word
+                    Movement::move_word_left(editor_state, text_buffer);
+                } else {
+                    // Regular left movement
+                    Movement::move_left(editor_state, text_buffer);
+                }
+
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
                 } else {
@@ -549,7 +597,15 @@ impl App {
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.start_selection();
                 }
-                Movement::move_right(editor_state, text_buffer);
+
+                if mods.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Right or Ctrl+Shift+Right: move by word
+                    Movement::move_word_right(editor_state, text_buffer);
+                } else {
+                    // Regular right movement
+                    Movement::move_right(editor_state, text_buffer);
+                }
+
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
                 } else {
@@ -561,7 +617,15 @@ impl App {
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.start_selection();
                 }
-                Movement::move_up(editor_state, text_buffer);
+
+                if mods.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Up: move by block
+                    Movement::move_block_up(editor_state, text_buffer);
+                } else {
+                    // Regular up movement
+                    Movement::move_up(editor_state, text_buffer);
+                }
+
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
                 } else {
@@ -573,7 +637,15 @@ impl App {
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.start_selection();
                 }
-                Movement::move_down(editor_state, text_buffer);
+
+                if mods.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+Down: move by block
+                    Movement::move_block_down(editor_state, text_buffer);
+                } else {
+                    // Regular down movement
+                    Movement::move_down(editor_state, text_buffer);
+                }
+
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
                 } else {
@@ -608,7 +680,20 @@ impl App {
             // Backspace
             (KeyCode::Backspace, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-                if editor_state.cursor.column > 0 {
+
+                // If there's a selection, delete it
+                if let Some(selection) = editor_state.selection {
+                    let (start, end) = selection.range();
+                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                        undo_manager.record(Change::Delete {
+                            pos: start,
+                            text: deleted,
+                        });
+                        editor_state.cursor.set_position(start);
+                        editor_state.clear_selection();
+                        editor_state.ensure_cursor_visible();
+                    }
+                } else if editor_state.cursor.column > 0 {
                     let pos = Position::new(
                         editor_state.cursor.line,
                         editor_state.cursor.column - 1,
@@ -637,18 +722,47 @@ impl App {
             // Delete
             (KeyCode::Delete, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-                let pos = editor_state.cursor.position();
-                if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
-                    undo_manager.record(Change::Delete {
-                        pos,
-                        text: ch.to_string(),
-                    });
+
+                // If there's a selection, delete it
+                if let Some(selection) = editor_state.selection {
+                    let (start, end) = selection.range();
+                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                        undo_manager.record(Change::Delete {
+                            pos: start,
+                            text: deleted,
+                        });
+                        editor_state.cursor.set_position(start);
+                        editor_state.clear_selection();
+                        editor_state.ensure_cursor_visible();
+                    }
+                } else {
+                    let pos = editor_state.cursor.position();
+                    if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                        undo_manager.record(Change::Delete {
+                            pos,
+                            text: ch.to_string(),
+                        });
+                    }
                 }
             }
 
             // Enter
             (KeyCode::Enter, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                // If there's a selection, delete it first
+                if let Some(selection) = editor_state.selection {
+                    let (start, end) = selection.range();
+                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                        undo_manager.record(Change::Delete {
+                            pos: start,
+                            text: deleted,
+                        });
+                        editor_state.cursor.set_position(start);
+                        editor_state.clear_selection();
+                    }
+                }
+
                 let pos = editor_state.cursor.position();
                 text_buffer.insert_char(pos, '\n')?;
                 undo_manager.record(Change::Insert {
@@ -663,6 +777,20 @@ impl App {
             // Regular character input
             (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                // If there's a selection, delete it first
+                if let Some(selection) = editor_state.selection {
+                    let (start, end) = selection.range();
+                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                        undo_manager.record(Change::Delete {
+                            pos: start,
+                            text: deleted,
+                        });
+                        editor_state.cursor.set_position(start);
+                        editor_state.clear_selection();
+                    }
+                }
+
                 let pos = editor_state.cursor.position();
                 text_buffer.insert_char(pos, c)?;
                 undo_manager.record(Change::Insert {

@@ -114,7 +114,7 @@ impl BufferView {
                     terminal.print(&line[..start_col.min(line.len())])?;
                 }
                 if end_col > start_col && start_col < line.len() {
-                    terminal.set_bg(Color::DarkGrey)?;
+                    terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
                     terminal.set_fg(Color::White)?;
                     terminal.print(&line[start_col..end_col.min(line.len())])?;
                     terminal.reset_color()?;
@@ -164,7 +164,7 @@ impl BufferView {
                     }
                     if let Some((start, end)) = selection_range {
                         if current_pos >= start && current_pos < end {
-                            terminal.set_bg(Color::DarkGrey)?;
+                            terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
                             terminal.set_fg(Color::White)?;
                         } else if let Some(color) = current_color {
                             terminal.set_fg(color)?;
@@ -184,7 +184,7 @@ impl BufferView {
             terminal.reset_color()?;
             if let Some((start, end)) = selection_range {
                 if current_pos >= start && current_pos < end {
-                    terminal.set_bg(Color::DarkGrey)?;
+                    terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
                     terminal.set_fg(Color::White)?;
                 } else if let Some(color) = current_color {
                     terminal.set_fg(color)?;

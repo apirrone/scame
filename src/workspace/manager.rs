@@ -1,4 +1,5 @@
 use super::buffer::{Buffer, BufferId};
+use crate::backup::BackupManager;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -197,5 +198,18 @@ impl Workspace {
             .filter(|(_, b)| b.is_modified())
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// Save all modified buffers
+    pub fn save_all_modified_buffers(&mut self, backup_manager: &BackupManager) -> Result<()> {
+        for buffer in self.buffers.values_mut() {
+            if buffer.is_modified() {
+                if let Some(path) = buffer.file_path() {
+                    backup_manager.create_backup(path)?;
+                    buffer.text_buffer_mut().save()?;
+                }
+            }
+        }
+        Ok(())
     }
 }

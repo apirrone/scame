@@ -22,26 +22,43 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ Home/End keys (start/end of line)
 - ✅ Ctrl+A (beginning of line, Emacs style)
 - ✅ Ctrl+E (end of line, Emacs style)
+- ✅ Ctrl+Left/Right - Word-based navigation (jump by words)
+- ✅ Ctrl+Up/Down - Block-based navigation (jump by paragraphs/blank lines)
 - ✅ Page Up/Page Down
 - ✅ Shift + Arrow keys for text selection (visual highlighting)
+- ✅ Ctrl+Shift+Left/Right - Select word by word
+- ✅ Ctrl+Shift+A/E - Select to start/end of line
 
 **Keyboard Shortcuts:**
-- `Arrow Keys` - Move cursor
-- `Shift + Arrows` - Select text (visual highlighting)
+
+*Navigation:*
+- `Arrow Keys` - Move cursor one character/line
+- `Ctrl+Left/Right` - Move by word
+- `Ctrl+Up/Down` - Move by block (paragraphs)
 - `Ctrl+A` - Beginning of line (Emacs style)
 - `Ctrl+E` - End of line (Emacs style)
-- `Ctrl+K` - Kill line (delete from cursor to end of line, copies to clipboard)
-- `Ctrl+C` - Copy selected text to clipboard
-- `Ctrl+V` - Paste from clipboard
-- `Ctrl+Z` - Undo
-- `Ctrl+Shift+Z` - Redo
-- `Ctrl+X Ctrl+S` - Save file (Emacs style - press Ctrl+X, then Ctrl+S)
-- `Ctrl+X Ctrl+C` - Exit editor (Emacs style - press Ctrl+X, then Ctrl+C)
-- `Ctrl+Q` - Quit (press twice if file is modified)
 - `Home/End` - Line start/end
 - `Page Up/Down` - Page scrolling
+
+*Selection:*
+- `Shift + Arrows` - Select character by character
+- `Ctrl+Shift+Left/Right` - Select word by word
+- `Ctrl+Shift+A` - Select to start of line
+- `Ctrl+Shift+E` - Select to end of line
+
+*Editing:*
+- `Ctrl+C` - Copy selected text to clipboard
+- `Ctrl+V` - Paste from clipboard
+- `Ctrl+K` - Kill line (delete from cursor to end of line, copies to clipboard)
+- `Ctrl+Z` - Undo
+- `Ctrl+Shift+Z` - Redo
 - `Backspace/Delete` - Delete characters
 - `Enter` - New line
+
+*File Operations:*
+- `Ctrl+X Ctrl+S` - Save file (Emacs style - press Ctrl+X, then Ctrl+S)
+- `Ctrl+X Ctrl+C` - Exit editor (Emacs style - press Ctrl+X, then Ctrl+C)
+- `Ctrl+Q` - Quit (with save prompt if modified)
 
 **Note:** `Ctrl+S` is now reserved for future search functionality
 
