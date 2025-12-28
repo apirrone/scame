@@ -1,5 +1,6 @@
 use crate::buffer::TextBuffer;
 use crate::editor::EditorState;
+use crate::lsp::Diagnostic;
 use crate::render::terminal::Terminal;
 use anyhow::Result;
 use crossterm::style::Color;
@@ -13,6 +14,7 @@ impl StatusBar {
         buffer: &TextBuffer,
         state: &EditorState,
         message: Option<&str>,
+        diagnostics: Option<&[Diagnostic]>,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let status_y = term_height.saturating_sub(1);
@@ -63,8 +65,21 @@ impl StatusBar {
             // Line count
             let line_info = format!("{} lines ", buffer.len_lines());
 
+            // Diagnostics count
+            let diag_info = if let Some(diags) = diagnostics {
+                let errors = diags.iter().filter(|d| matches!(d.severity, crate::lsp::DiagnosticSeverity::Error)).count();
+                let warnings = diags.iter().filter(|d| matches!(d.severity, crate::lsp::DiagnosticSeverity::Warning)).count();
+                if errors > 0 || warnings > 0 {
+                    format!("E:{} W:{} ", errors, warnings)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
             // Calculate spacing
-            let right_side = format!("{}{}", position_info, line_info);
+            let right_side = format!("{}{}{}", position_info, line_info, diag_info);
             let spaces_needed = term_width as usize - status.len() - right_side.len();
 
             status.push_str(&" ".repeat(spaces_needed));

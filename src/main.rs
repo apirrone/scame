@@ -24,6 +24,10 @@ fn main() -> anyhow::Result<()> {
     // Initialize logger
     logger::init();
 
+    // Create Tokio runtime for LSP background tasks
+    let runtime = tokio::runtime::Runtime::new()?;
+    let _guard = runtime.enter();
+
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 
@@ -40,11 +44,17 @@ fn main() -> anyhow::Result<()> {
         App::new()?
     };
 
+    // Initialize LSP
+    app.initialize_lsp()?;
+
     // Initialize terminal
     let terminal = Terminal::new()?;
 
     // Main event loop
     loop {
+        // Poll for LSP messages (non-blocking)
+        app.poll_lsp_messages();
+
         // Render
         app.render(&terminal)?;
 
@@ -56,6 +66,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    // Shutdown LSP
+    app.shutdown_lsp()?;
 
     // Cleanup
     terminal.cleanup()?;

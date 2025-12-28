@@ -1,5 +1,6 @@
 use crate::buffer::TextBuffer;
 use crate::editor::EditorState;
+use crate::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::render::terminal::Terminal;
 use crate::syntax::{HighlightSpan, Theme};
 use anyhow::Result;
@@ -16,6 +17,7 @@ impl BufferView {
         show_line_numbers: bool,
         highlight_spans: Option<&[HighlightSpan]>,
         theme: &Theme,
+        diagnostics: Option<&[Diagnostic]>,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -41,12 +43,37 @@ impl BufferView {
                 continue;
             }
 
-            // Render line number
+            // Check if this line has diagnostics
+            let line_diagnostic = diagnostics.and_then(|diags| {
+                diags.iter().find(|d| {
+                    buffer_line >= d.range.0.line && buffer_line <= d.range.1.line
+                })
+            });
+
+            // Render line number with diagnostic indicator
             if show_line_numbers {
-                terminal.set_fg(Color::DarkGrey)?;
-                let line_num = format!("{:>width$} ", buffer_line + 1, width = (line_number_width - 1) as usize);
-                terminal.print(&line_num)?;
-                terminal.reset_color()?;
+                // Show diagnostic marker if present
+                if let Some(diag) = line_diagnostic {
+                    let (marker, color) = match diag.severity {
+                        DiagnosticSeverity::Error => ("●", Color::Red),
+                        DiagnosticSeverity::Warning => ("●", Color::Yellow),
+                        DiagnosticSeverity::Information => ("●", Color::Blue),
+                        DiagnosticSeverity::Hint => ("●", Color::Cyan),
+                    };
+                    terminal.set_fg(color)?;
+                    terminal.print(marker)?;
+                    terminal.reset_color()?;
+                    terminal.set_fg(Color::DarkGrey)?;
+                    let line_num = format!("{:>width$}", buffer_line + 1, width = (line_number_width - 2) as usize);
+                    terminal.print(&line_num)?;
+                    terminal.print(" ")?;
+                    terminal.reset_color()?;
+                } else {
+                    terminal.set_fg(Color::DarkGrey)?;
+                    let line_num = format!("{:>width$} ", buffer_line + 1, width = (line_number_width - 1) as usize);
+                    terminal.print(&line_num)?;
+                    terminal.reset_color()?;
+                }
             }
 
             // Get the line text

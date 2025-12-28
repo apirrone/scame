@@ -2,6 +2,7 @@ use crate::backup::BackupManager;
 use crate::buffer::{Change, Position};
 use crate::editor::movement::Movement;
 use crate::logger;
+use crate::lsp::{DiagnosticsStore, LspManager, LspResponse};
 use crate::render::{BufferView, FilePicker, StatusBar, Terminal};
 use crate::search::{FileSearch, FileSearchResult};
 use crate::syntax::{HighlightSpan, Highlighter, SupportedLanguage};
@@ -11,6 +12,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use regex::RegexBuilder;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub enum ControlFlow {
     Continue,
@@ -61,6 +63,10 @@ pub struct App {
     replace_pattern: String,
     replace_with: String,
     replace_count: usize,
+    // LSP state
+    lsp_manager: Option<LspManager>,
+    lsp_receiver: Option<mpsc::UnboundedReceiver<LspResponse>>,
+    diagnostics_store: DiagnosticsStore,
 }
 
 impl App {
@@ -106,6 +112,9 @@ impl App {
             replace_pattern: String::new(),
             replace_with: String::new(),
             replace_count: 0,
+            lsp_manager: None,
+            lsp_receiver: None,
+            diagnostics_store: DiagnosticsStore::new(),
         })
     }
 
@@ -150,6 +159,9 @@ impl App {
                 replace_pattern: String::new(),
                 replace_with: String::new(),
                 replace_count: 0,
+                lsp_manager: None,
+                lsp_receiver: None,
+                diagnostics_store: DiagnosticsStore::new(),
             });
         }
 
@@ -178,6 +190,9 @@ impl App {
             replace_pattern: String::new(),
             replace_with: String::new(),
             replace_count: 0,
+            lsp_manager: None,
+            lsp_receiver: None,
+            diagnostics_store: DiagnosticsStore::new(),
         })
     }
 
@@ -245,6 +260,9 @@ impl App {
                 None
             };
 
+            // Get diagnostics for current buffer
+            let buffer_diagnostics = self.diagnostics_store.get(buffer.id().0);
+
             BufferView::render(
                 terminal,
                 buffer.text_buffer(),
@@ -252,12 +270,14 @@ impl App {
                 self.show_line_numbers,
                 highlight_spans.as_deref(),
                 self.highlighter.theme(),
+                buffer_diagnostics,
             )?;
             StatusBar::render(
                 terminal,
                 buffer.text_buffer(),
                 buffer.editor_state(),
                 self.message.as_deref(),
+                buffer_diagnostics,
             )?;
             // Position cursor (but don't show yet)
             BufferView::position_cursor(
@@ -347,6 +367,8 @@ impl App {
                     self.cached_highlights = None;
                     self.cached_text_hash = 0;
                     self.logged_highlighting = false;
+                    // Notify LSP about newly opened file
+                    self.notify_lsp_did_open();
                 }
             }
             KeyCode::Up => {
@@ -1025,6 +1047,8 @@ impl App {
                     self.backup_manager.create_backup(path)?;
                     buffer.text_buffer_mut().save()?;
                     self.message = Some("Saved".to_string());
+                    // Notify LSP about save
+                    self.notify_lsp_did_save();
                 } else {
                     self.message = Some("No file path set".to_string());
                 }
@@ -1371,6 +1395,22 @@ impl App {
                 editor_state.clear_selection();
             }
 
+            // F12 - Jump to definition
+            (KeyCode::F(12), _) => {
+                if let Some(lsp) = &mut self.lsp_manager {
+                    if let Some(path) = buffer.file_path() {
+                        if crate::lsp::Language::from_path(path).is_some() {
+                            let pos = buffer.editor_state().cursor.position();
+                            let buffer_id = buffer.id().0;
+                            let lsp_pos = crate::lsp::Position::new(pos.line, pos.column);
+                            if lsp.goto_definition(buffer_id, path.clone(), lsp_pos).is_ok() {
+                                self.message = Some("Finding definition...".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             // Backspace
             (KeyCode::Backspace, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
@@ -1497,7 +1537,131 @@ impl App {
             _ => {}
         }
 
+        // Notify LSP about text changes (if buffer was modified)
+        if let Some(buffer) = self.workspace.active_buffer() {
+            if buffer.text_buffer().is_modified() {
+                self.notify_lsp_did_change();
+            }
+        }
+
         Ok(ControlFlow::Continue)
+    }
+
+    /// Initialize the LSP manager
+    pub fn initialize_lsp(&mut self) -> Result<()> {
+        let (manager, receiver) = LspManager::new();
+        self.lsp_manager = Some(manager);
+        self.lsp_receiver = Some(receiver);
+
+        // Notify LSP about any currently open file
+        self.notify_lsp_did_open();
+
+        Ok(())
+    }
+
+    /// Poll for LSP messages (non-blocking)
+    pub fn poll_lsp_messages(&mut self) {
+        // Collect responses first to avoid borrow checker issues
+        let mut responses = Vec::new();
+        if let Some(receiver) = &mut self.lsp_receiver {
+            while let Ok(response) = receiver.try_recv() {
+                responses.push(response);
+            }
+        }
+
+        // Handle all collected responses
+        for response in responses {
+            self.handle_lsp_response(response);
+        }
+    }
+
+    /// Handle an LSP response
+    fn handle_lsp_response(&mut self, response: LspResponse) {
+        match response {
+            LspResponse::Diagnostics {
+                buffer_id,
+                diagnostics,
+            } => {
+                self.diagnostics_store.update(buffer_id, diagnostics);
+            }
+            LspResponse::GotoDefinition { location } => {
+                // Open file and jump to position
+                match self.workspace.open_file(location.path.clone()) {
+                    Ok(_) => {
+                        if let Some(buffer) = self.workspace.active_buffer_mut() {
+                            let editor_state = buffer.editor_state_mut();
+                            editor_state.cursor.set_position(crate::buffer::Position {
+                                line: location.position.line,
+                                column: location.position.column,
+                            });
+                            editor_state.ensure_cursor_visible();
+                            self.message = Some(format!("Jumped to {}", location.path.display()));
+                        }
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Error: {}", e));
+                    }
+                }
+            }
+            LspResponse::Completion { items: _ } => {
+                // TODO: Show completion popup
+            }
+            LspResponse::Error { message } => {
+                self.message = Some(format!("LSP Error: {}", message));
+            }
+        }
+    }
+
+    /// Shutdown the LSP manager
+    pub fn shutdown_lsp(&mut self) -> Result<()> {
+        if let Some(manager) = &mut self.lsp_manager {
+            manager.shutdown()?;
+        }
+        Ok(())
+    }
+
+    /// Notify LSP that the active buffer was opened
+    fn notify_lsp_did_open(&mut self) {
+        if let Some(lsp) = &mut self.lsp_manager {
+            if let Some(buffer) = self.workspace.active_buffer() {
+                if let Some(path) = buffer.file_path() {
+                    if let Some(language) = crate::lsp::Language::from_path(path) {
+                        let content = buffer.text_buffer().to_string();
+                        let buffer_id = buffer.id().0; // Extract usize from BufferId
+                        let _ = lsp.did_open(buffer_id, path.clone(), content, language);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Notify LSP that the active buffer was changed
+    fn notify_lsp_did_change(&mut self) {
+        if let Some(lsp) = &mut self.lsp_manager {
+            if let Some(buffer) = self.workspace.active_buffer() {
+                if let Some(path) = buffer.file_path() {
+                    if crate::lsp::Language::from_path(path).is_some() {
+                        let content = buffer.text_buffer().to_string();
+                        let buffer_id = buffer.id().0; // Extract usize from BufferId
+                        let _ = lsp.did_change(buffer_id, path.clone(), content);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Notify LSP that the active buffer was saved
+    fn notify_lsp_did_save(&mut self) {
+        if let Some(lsp) = &mut self.lsp_manager {
+            if let Some(buffer) = self.workspace.active_buffer() {
+                if let Some(path) = buffer.file_path() {
+                    if crate::lsp::Language::from_path(path).is_some() {
+                        let buffer_id = buffer.id().0; // Extract usize from BufferId
+                        let _ = lsp.did_save(buffer_id, path.clone());
+                    }
+                }
+            }
+        }
     }
 }
 

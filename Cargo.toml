@@ -18,7 +18,7 @@ tree-sitter-rust = "0.21"
 # LSP client
 tower-lsp = "0.20"
 lsp-types = "0.95"
-tokio = { version = "1", features = ["rt-multi-thread", "io-util", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "sync", "time", "macros", "process"] }
 
 # Search & file operations
 regex = "1.10"
@@ -28,6 +28,7 @@ ignore = "0.4"  # Gitignore support (replaces walkdir)
 
 # Configuration & serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = "0.8"
 
 # Error handling

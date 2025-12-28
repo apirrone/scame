@@ -90,6 +90,7 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 *Navigation:*
 - `Alt+G` - Jump to line (enter line number, press Enter to jump)
 - `Ctrl+J` - Center view on cursor (Emacs style - scrolls viewport to center cursor vertically)
+- `F12` - Jump to definition (LSP - works with Rust/Python when language server installed)
 
 *Universal Cancel:*
 - `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
@@ -191,12 +192,36 @@ scame/
 - [x] Regex search support (Ctrl+T to toggle between regex/plain string)
 - [x] Search and replace (Ctrl+H interactive query-replace) - **Regex by default**
 
-### Phase 5: LSP Integration
-- [ ] LSP client with tower-lsp
-- [ ] Jump to definition (F12)
+### Phase 5: LSP Integration (IN PROGRESS)
+- [x] LSP client with tower-lsp (background Tokio task)
+- [x] Text synchronization (didOpen, didChange, didSave)
+- [x] Diagnostics display (● markers in gutter, E:/W: counts in status bar)
+- [x] Non-blocking channel architecture (maintains 60 FPS)
+- [x] Jump to definition (F12) - works with rust-analyzer and pyright!
 - [ ] Jump back (Shift+F12)
 - [ ] Auto-completion (Tab)
-- [ ] Diagnostics (errors/warnings)
+
+**Supported Languages:**
+- Rust (rust-analyzer)
+- Python (pyright, python-lsp-server)
+
+**Installing Language Servers:**
+
+For **Rust** (rust-analyzer):
+```bash
+rustup component add rust-analyzer
+```
+
+For **Python** (choose one):
+```bash
+# Option 1: Pyright (recommended, faster)
+npm install -g pyright
+
+# Option 2: Python LSP Server (fallback)
+pip install python-lsp-server
+```
+
+The editor will automatically try alternatives if the primary server isn't found.
 
 ### Phase 6: Polish & Extensions
 - [ ] Command palette (Ctrl+Shift+P)
@@ -207,16 +232,19 @@ scame/
 
 ## Dependencies
 
-**Core (minimal set):**
+**Core:**
 - `crossterm` - Terminal UI (cross-platform)
 - `ropey` - Rope data structure for text
 - `anyhow` - Error handling
 
-**Future additions:**
-- `tree-sitter` - Syntax parsing (Phase 3)
-- `tower-lsp` - LSP client (Phase 5)
-- `regex` - Search support (Phase 4)
-- `fuzzy-matcher` - File search (Phase 2)
+**Features:**
+- `tree-sitter` - Syntax parsing (Phase 3) ✅
+- `tower-lsp` - LSP client (Phase 5) ✅
+- `tokio` - Async runtime for LSP (Phase 5) ✅
+- `lsp-types` - LSP protocol types (Phase 5) ✅
+- `regex` - Search support (Phase 4) ✅
+- `fuzzy-matcher` - File search (Phase 2) ✅
+- `ignore` - .gitignore support (Phase 2) ✅
 
 ## Design Principles
 
