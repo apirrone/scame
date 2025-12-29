@@ -3,6 +3,7 @@ mod buffer;
 mod editor;
 mod logger;
 mod render;
+mod session;
 
 // Stub modules for future implementation
 mod backup;
@@ -73,6 +74,11 @@ fn main() -> anyhow::Result<()> {
                 ControlFlow::Exit => break,
             }
         }
+    }
+
+    // Save session state
+    if let Err(e) = app.save_session_state() {
+        eprintln!("Warning: Failed to save session state: {}", e);
     }
 
     // Shutdown LSP

@@ -205,8 +205,24 @@ impl App {
             let mut file_tree = FileTree::new(path.clone());
             file_tree.scan()?;
 
-            // Create empty buffer
-            workspace.new_buffer();
+            // Try to restore session state
+            if let Ok(Some(session)) = crate::session::SessionState::load(&path) {
+                // Restore open files
+                for file_path in &session.open_files {
+                    if let Err(e) = workspace.open_file(file_path.clone()) {
+                        eprintln!("Failed to restore file {:?}: {}", file_path, e);
+                    }
+                }
+
+                // Set active buffer if we have any
+                let buffer_ids: Vec<_> = workspace.buffer_ids();
+                if let Some(&active_id) = buffer_ids.get(session.active_buffer_index) {
+                    workspace.set_active_buffer(active_id);
+                }
+            } else {
+                // No session to restore, create empty buffer
+                workspace.new_buffer();
+            }
 
             // Initialize layout
             let mut layout = crate::workspace::LayoutManager::new();
@@ -3301,6 +3317,44 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Save session state for the current project
+    pub fn save_session_state(&self) -> Result<()> {
+        // Only save if we have a project directory open
+        if let Some(file_tree) = &self.file_tree {
+            let project_root = file_tree.root().to_path_buf();
+
+            // Collect open file paths
+            let mut open_files = Vec::new();
+            let buffer_ids = self.workspace.buffer_ids();
+
+            for &buffer_id in &buffer_ids {
+                if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                    if let Some(file_path) = buffer.file_path() {
+                        open_files.push(file_path.clone());
+                    }
+                }
+            }
+
+            // Find the active buffer index
+            let active_buffer_index = if let Some(active_id) = self.workspace.active_buffer_id() {
+                buffer_ids.iter().position(|&id| id == active_id).unwrap_or(0)
+            } else {
+                0
+            };
+
+            // Create and save session state
+            let session = crate::session::SessionState::new(
+                project_root,
+                open_files,
+                active_buffer_index,
+            );
+
+            session.save()?;
+        }
+
+        Ok(())
     }
 }
 
