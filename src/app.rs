@@ -23,6 +23,7 @@ pub enum ControlFlow {
 pub enum AppMode {
     Normal,
     FilePicker,
+    CommandPanel,       // Command palette (Ctrl+Shift+P)
     ConfirmExit,
     Search,
     JumpToLine,
@@ -30,6 +31,28 @@ pub enum AppMode {
     ReplaceEnterRepl,   // Prompting for replacement string
     ReplaceConfirm,     // Confirming each replacement
     Completion,         // Showing completion suggestions
+}
+
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub name: String,
+    pub description: String,
+    pub keybinding: Option<String>,
+    pub action: CommandAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAction {
+    Search,
+    SearchAndReplace,
+    JumpToLine,
+    OpenFile,
+    SaveFile,
+    ToggleSplit,
+    SwitchPane,
+    NextBuffer,
+    PreviousBuffer,
+    CloseBuffer,
 }
 
 pub struct App {
@@ -76,6 +99,10 @@ pub struct App {
     completion_items: Vec<crate::lsp::CompletionItem>,
     completion_selected: usize,
     completion_scroll_offset: usize,
+    // Command panel state
+    command_panel_pattern: String,
+    command_panel_results: Vec<Command>,
+    command_panel_selected: usize,
 }
 
 impl App {
@@ -136,6 +163,9 @@ impl App {
             completion_items: Vec::new(),
             completion_selected: 0,
             completion_scroll_offset: 0,
+            command_panel_pattern: String::new(),
+            command_panel_results: Vec::new(),
+            command_panel_selected: 0,
         })
     }
 
@@ -195,6 +225,9 @@ impl App {
                 completion_items: Vec::new(),
                 completion_selected: 0,
                 completion_scroll_offset: 0,
+                command_panel_pattern: String::new(),
+                command_panel_results: Vec::new(),
+                command_panel_selected: 0,
             });
         }
 
@@ -238,7 +271,125 @@ impl App {
             completion_items: Vec::new(),
             completion_selected: 0,
             completion_scroll_offset: 0,
+            command_panel_pattern: String::new(),
+            command_panel_results: Vec::new(),
+            command_panel_selected: 0,
         })
+    }
+
+    /// Build list of all available commands
+    fn build_all_commands() -> Vec<Command> {
+        vec![
+            Command {
+                name: "Search".to_string(),
+                description: "Search for text in the current buffer".to_string(),
+                keybinding: Some("Ctrl+S".to_string()),
+                action: CommandAction::Search,
+            },
+            Command {
+                name: "Search and Replace".to_string(),
+                description: "Search and replace text in the current buffer".to_string(),
+                keybinding: Some("Ctrl+H".to_string()),
+                action: CommandAction::SearchAndReplace,
+            },
+            Command {
+                name: "Jump to Line".to_string(),
+                description: "Jump to a specific line number".to_string(),
+                keybinding: Some("Ctrl+G".to_string()),
+                action: CommandAction::JumpToLine,
+            },
+            Command {
+                name: "Open File".to_string(),
+                description: "Open a file in the workspace".to_string(),
+                keybinding: Some("Ctrl+P".to_string()),
+                action: CommandAction::OpenFile,
+            },
+            Command {
+                name: "Save File".to_string(),
+                description: "Save the current buffer to disk".to_string(),
+                keybinding: Some("Ctrl+X Ctrl+S".to_string()),
+                action: CommandAction::SaveFile,
+            },
+            Command {
+                name: "Toggle Split".to_string(),
+                description: "Toggle vertical split view".to_string(),
+                keybinding: Some("Ctrl+X 3".to_string()),
+                action: CommandAction::ToggleSplit,
+            },
+            Command {
+                name: "Switch Pane".to_string(),
+                description: "Switch focus between split panes".to_string(),
+                keybinding: Some("Ctrl+X O".to_string()),
+                action: CommandAction::SwitchPane,
+            },
+            Command {
+                name: "Next Buffer".to_string(),
+                description: "Switch to the next buffer".to_string(),
+                keybinding: Some("Ctrl+PageDown".to_string()),
+                action: CommandAction::NextBuffer,
+            },
+            Command {
+                name: "Previous Buffer".to_string(),
+                description: "Switch to the previous buffer".to_string(),
+                keybinding: Some("Ctrl+PageUp".to_string()),
+                action: CommandAction::PreviousBuffer,
+            },
+            Command {
+                name: "Close Buffer".to_string(),
+                description: "Close the current buffer".to_string(),
+                keybinding: Some("Ctrl+W".to_string()),
+                action: CommandAction::CloseBuffer,
+            },
+        ]
+    }
+
+    /// Filter commands by pattern (fuzzy search)
+    fn filter_commands(pattern: &str) -> Vec<Command> {
+        let all_commands = Self::build_all_commands();
+
+        if pattern.is_empty() {
+            return all_commands;
+        }
+
+        let pattern_lower = pattern.to_lowercase();
+        let mut scored_commands: Vec<(Command, i32)> = all_commands
+            .into_iter()
+            .filter_map(|cmd| {
+                let name_lower = cmd.name.to_lowercase();
+                let desc_lower = cmd.description.to_lowercase();
+
+                // Simple fuzzy matching: check if pattern chars appear in order
+                let mut pattern_chars = pattern_lower.chars();
+                let mut current_pattern_char = pattern_chars.next();
+                let mut score = 0;
+                let mut last_match_pos = 0;
+
+                for (pos, c) in name_lower.chars().enumerate() {
+                    if let Some(pc) = current_pattern_char {
+                        if c == pc {
+                            score += 100 - (pos - last_match_pos) as i32;
+                            last_match_pos = pos;
+                            current_pattern_char = pattern_chars.next();
+                        }
+                    }
+                }
+
+                // If all pattern chars matched, include this command
+                if current_pattern_char.is_none() {
+                    Some((cmd, score))
+                } else if desc_lower.contains(&pattern_lower) {
+                    // Fallback: substring match in description
+                    Some((cmd, 10))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by score (highest first)
+        scored_commands.sort_by(|a, b| b.1.cmp(&a.1));
+
+        scored_commands.into_iter().map(|(cmd, _)| cmd).collect()
     }
 
     /// Render the application
@@ -420,6 +571,16 @@ impl App {
                 &self.file_picker_pattern,
                 &self.file_picker_results,
                 self.file_picker_selected,
+            )?;
+        }
+
+        // Render command panel overlay if active
+        if self.mode == AppMode::CommandPanel {
+            crate::render::CommandPanel::render(
+                terminal,
+                &self.command_panel_pattern,
+                &self.command_panel_results,
+                self.command_panel_selected,
             )?;
         }
 
@@ -635,6 +796,7 @@ impl App {
         match self.mode {
             AppMode::Normal => self.handle_normal_mode(key),
             AppMode::FilePicker => self.handle_file_picker_mode(key),
+            AppMode::CommandPanel => self.handle_command_panel_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
             AppMode::Search => self.handle_search_mode(key),
             AppMode::JumpToLine => self.handle_jump_to_line_mode(key),
@@ -719,6 +881,213 @@ impl App {
             self.file_picker_results = self.file_search.search(file_tree, &self.file_picker_pattern, priority_ext);
             self.file_picker_selected = 0;
         }
+    }
+
+    /// Handle key in command panel mode
+    fn handle_command_panel_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel command panel
+                self.mode = AppMode::Normal;
+                self.command_panel_pattern.clear();
+                self.command_panel_results.clear();
+                self.message = None;
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel command panel (Emacs style)
+                self.mode = AppMode::Normal;
+                self.command_panel_pattern.clear();
+                self.command_panel_results.clear();
+                self.message = None;
+            }
+            KeyCode::Enter => {
+                // Execute selected command
+                if let Some(command) = self.command_panel_results.get(self.command_panel_selected) {
+                    let action = command.action;
+                    self.mode = AppMode::Normal;
+                    self.command_panel_pattern.clear();
+                    self.command_panel_results.clear();
+
+                    // Execute the command
+                    return self.execute_command(action);
+                }
+            }
+            KeyCode::Up => {
+                if self.command_panel_selected > 0 {
+                    self.command_panel_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.command_panel_selected + 1 < self.command_panel_results.len() {
+                    self.command_panel_selected += 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.command_panel_pattern.push(c);
+                self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
+                self.command_panel_selected = 0;
+            }
+            KeyCode::Backspace => {
+                self.command_panel_pattern.pop();
+                self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
+                self.command_panel_selected = 0;
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Execute a command from the command panel
+    fn execute_command(&mut self, action: CommandAction) -> Result<ControlFlow> {
+        match action {
+            CommandAction::Search => {
+                // Enter search mode
+                let buffer = self.workspace.active_buffer();
+                if let Some(buffer) = buffer {
+                    self.mode = AppMode::Search;
+                    self.search_pattern.clear();
+                    self.search_start_pos = Some(buffer.editor_state().cursor.position());
+                    self.search_is_reverse = false;
+                    self.search_use_regex = true;
+                    self.message = Some("Search [REGEX]:".to_string());
+                }
+            }
+            CommandAction::SearchAndReplace => {
+                // Enter replace mode
+                self.mode = AppMode::ReplacePrompt;
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                self.replace_count = 0;
+                self.message = Some("Search pattern:".to_string());
+            }
+            CommandAction::JumpToLine => {
+                // Enter jump to line mode
+                self.mode = AppMode::JumpToLine;
+                self.jump_to_line_input.clear();
+                self.message = Some("Jump to line:".to_string());
+            }
+            CommandAction::OpenFile => {
+                // Enter file picker mode
+                if self.file_tree.is_some() {
+                    self.mode = AppMode::FilePicker;
+                    self.file_picker_pattern.clear();
+                    self.file_picker_results.clear();
+                    self.file_picker_selected = 0;
+                } else {
+                    self.message = Some("No project directory open".to_string());
+                }
+            }
+            CommandAction::SaveFile => {
+                // Save current buffer
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        if let Some(path) = buffer.file_path() {
+                            self.backup_manager.create_backup(path)?;
+                            buffer.text_buffer_mut().save()?;
+                            self.message = Some("Saved".to_string());
+                            self.notify_lsp_did_save();
+                        } else {
+                            self.message = Some("Buffer has no file path".to_string());
+                        }
+                    }
+                } else {
+                    self.message = Some("No active buffer".to_string());
+                }
+            }
+            CommandAction::ToggleSplit => {
+                // Toggle split
+                let (term_width, _) = crossterm::terminal::size()?;
+                self.layout.toggle_split(term_width);
+
+                if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+                    // Opening split: assign current buffer to left, find another for right
+                    if let Some(active_id) = self.workspace.active_buffer_id() {
+                        self.layout.set_buffer(crate::workspace::PaneId::Left, active_id);
+
+                        let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                        let other_id = buffer_ids.iter()
+                            .find(|&&id| id != active_id)
+                            .or_else(|| buffer_ids.first())
+                            .copied();
+
+                        if let Some(other_id) = other_id {
+                            self.layout.set_buffer(crate::workspace::PaneId::Right, other_id);
+                        }
+                    }
+                    self.message = Some("Split opened".to_string());
+                } else {
+                    self.message = Some("Split closed".to_string());
+                }
+            }
+            CommandAction::SwitchPane => {
+                // Switch pane
+                self.layout.switch_pane();
+                self.message = Some(format!("Switched to {:?} pane", self.layout.active_pane()));
+            }
+            CommandAction::NextBuffer => {
+                // Switch to next buffer in active pane
+                let current_id = self.layout.active_buffer();
+                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+
+                if let Some(current) = current_id {
+                    let current_idx = buffer_ids.iter().position(|&id| id == current).unwrap_or(0);
+                    let next_idx = (current_idx + 1) % buffer_ids.len();
+
+                    if let Some(&next_id) = buffer_ids.get(next_idx) {
+                        let pane = self.layout.active_pane();
+                        self.layout.set_buffer(pane, next_id);
+                        self.message = Some("Next buffer".to_string());
+                    }
+                }
+            }
+            CommandAction::PreviousBuffer => {
+                // Switch to previous buffer in active pane
+                let current_id = self.layout.active_buffer();
+                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+
+                if let Some(current) = current_id {
+                    let current_idx = buffer_ids.iter().position(|&id| id == current).unwrap_or(0);
+                    let prev_idx = if current_idx == 0 {
+                        buffer_ids.len() - 1
+                    } else {
+                        current_idx - 1
+                    };
+
+                    if let Some(&prev_id) = buffer_ids.get(prev_idx) {
+                        let pane = self.layout.active_pane();
+                        self.layout.set_buffer(pane, prev_id);
+                        self.message = Some("Previous buffer".to_string());
+                    }
+                }
+            }
+            CommandAction::CloseBuffer => {
+                // Close current buffer
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    // Check if buffer is modified
+                    if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                        if buffer.text_buffer().is_modified() {
+                            self.message = Some("Buffer has unsaved changes (save first)".to_string());
+                        } else {
+                            // Close the buffer
+                            if let Err(e) = self.workspace.close_buffer(buffer_id) {
+                                self.message = Some(format!("Error closing buffer: {}", e));
+                            } else {
+                                // If there are remaining buffers, switch to another one
+                                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                                if let Some(&next_id) = buffer_ids.first() {
+                                    let pane = self.layout.active_pane();
+                                    self.layout.set_buffer(pane, next_id);
+                                    self.message = Some("Buffer closed".to_string());
+                                } else {
+                                    self.message = Some("All buffers closed".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue)
     }
 
     /// Handle key in confirm exit mode
@@ -1598,7 +1967,15 @@ impl App {
         // Handle Ctrl+X Ctrl+S (Emacs-style save) and Ctrl+X Ctrl+C (Emacs-style exit)
         if self.waiting_for_second_key {
             self.waiting_for_second_key = false;
-            if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X Ctrl+P - Command panel
+                self.mode = AppMode::CommandPanel;
+                self.command_panel_pattern.clear();
+                self.command_panel_results = Self::filter_commands("");
+                self.command_panel_selected = 0;
+                self.message = Some("Command Palette (Ctrl+X Ctrl+P)".to_string());
+                return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+S - Save
                 if let Some(path) = buffer.file_path() {
                     self.backup_manager.create_backup(path)?;
