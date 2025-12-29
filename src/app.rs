@@ -2277,6 +2277,112 @@ impl App {
                 self.message = Some("Reverse search [REGEX]:".to_string());
             }
 
+            // Alt+Up - Move line up
+            (KeyCode::Up, KeyModifiers::ALT) => {
+                let current_line = buffer.editor_state().cursor.line;
+                let cursor_col = buffer.editor_state().cursor.column;
+
+                // Can't move first line up
+                if current_line == 0 {
+                    self.message = Some("Already at first line".to_string());
+                } else {
+                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                    // Get the current line and the line above (includes newlines)
+                    if let (Some(current_content), Some(prev_content)) =
+                        (text_buffer.get_line(current_line), text_buffer.get_line(current_line - 1)) {
+
+                        // Remove newlines to get actual content length
+                        let current_trimmed = current_content.trim_end_matches(&['\n', '\r'][..]);
+                        let current_line_len = current_trimmed.len();
+
+                        // Calculate positions for deletion
+                        let start_pos = Position::new(current_line - 1, 0);
+                        let end_pos = Position::new(current_line + 1, 0);
+
+                        // Delete both lines (returns deleted content)
+                        if let Ok(deleted) = text_buffer.delete_range(start_pos, end_pos) {
+                            // Swap: current line + prev line (both already have newlines from get_line)
+                            let swapped = format!("{}{}", current_content, prev_content);
+
+                            // Insert swapped content
+                            if text_buffer.insert(start_pos, &swapped).is_ok() {
+                                // Record for undo as a single compound change
+                                undo_manager.record(Change::Compound(vec![
+                                    Change::Delete {
+                                        pos: start_pos,
+                                        text: deleted.clone(),
+                                    },
+                                    Change::Insert {
+                                        pos: start_pos,
+                                        text: swapped,
+                                    }
+                                ]));
+
+                                // Move cursor up and preserve column
+                                let new_col = cursor_col.min(current_line_len);
+                                editor_state.cursor.line = current_line - 1;
+                                editor_state.cursor.column = new_col;
+                                self.message = Some("Line moved up".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Alt+Down - Move line down
+            (KeyCode::Down, KeyModifiers::ALT) => {
+                let current_line = buffer.editor_state().cursor.line;
+                let cursor_col = buffer.editor_state().cursor.column;
+
+                // Check if we can move down
+                if current_line >= buffer.text_buffer().len_lines() - 1 {
+                    self.message = Some("Already at last line".to_string());
+                } else {
+                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                    // Get the current line and the line below (includes newlines)
+                    if let (Some(current_content), Some(next_content)) =
+                        (text_buffer.get_line(current_line), text_buffer.get_line(current_line + 1)) {
+
+                        // Remove newlines to get actual content length
+                        let current_trimmed = current_content.trim_end_matches(&['\n', '\r'][..]);
+                        let current_line_len = current_trimmed.len();
+
+                        // Calculate positions for deletion
+                        let start_pos = Position::new(current_line, 0);
+                        let end_pos = Position::new(current_line + 2, 0);
+
+                        // Delete both lines (returns deleted content)
+                        if let Ok(deleted) = text_buffer.delete_range(start_pos, end_pos) {
+                            // Swap: next line + current line (both already have newlines from get_line)
+                            let swapped = format!("{}{}", next_content, current_content);
+
+                            // Insert swapped content
+                            if text_buffer.insert(start_pos, &swapped).is_ok() {
+                                // Record for undo as a single compound change
+                                undo_manager.record(Change::Compound(vec![
+                                    Change::Delete {
+                                        pos: start_pos,
+                                        text: deleted.clone(),
+                                    },
+                                    Change::Insert {
+                                        pos: start_pos,
+                                        text: swapped,
+                                    }
+                                ]));
+
+                                // Move cursor down and preserve column
+                                let new_col = cursor_col.min(current_line_len);
+                                editor_state.cursor.line = current_line + 1;
+                                editor_state.cursor.column = new_col;
+                                self.message = Some("Line moved down".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             // Alt+G - Jump to line
             (KeyCode::Char('g'), KeyModifiers::ALT) => {
                 self.mode = AppMode::JumpToLine;
@@ -2316,8 +2422,38 @@ impl App {
             // Ctrl+Z - Undo
             (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
                 if let Some(change) = buffer.undo_manager_mut().undo() {
+                    // Save cursor position before undo
+                    let saved_line = buffer.editor_state().cursor.line;
+                    let saved_col = buffer.editor_state().cursor.column;
+
                     buffer.apply_change(&change)?;
                     buffer.undo_manager_mut().finish_undo_redo();
+
+                    // For compound changes (like line movements), try to restore cursor position
+                    if let Change::Compound(changes) = &change {
+                        if let Some(Change::Delete { text, .. }) = changes.first() {
+                            // Count lines in deleted text to determine offset
+                            let line_count = text.matches('\n').count();
+                            if line_count > 0 {
+                                // Cursor was on line N, moved to line N-1 or N+1
+                                // After undo, adjust back
+                                let target_line = if saved_line == buffer.editor_state().cursor.line {
+                                    // Line didn't change, might need adjustment
+                                    saved_line + 1
+                                } else {
+                                    saved_line
+                                };
+
+                                let total_lines = buffer.text_buffer().len_lines();
+                                if target_line < total_lines {
+                                    let line_len = buffer.text_buffer().line_len(target_line);
+                                    buffer.editor_state_mut().cursor.line = target_line;
+                                    buffer.editor_state_mut().cursor.column = saved_col.min(line_len);
+                                }
+                            }
+                        }
+                    }
+
                     self.message = Some("Undo".to_string());
                 }
             }
