@@ -13,6 +13,7 @@ impl ProjectSearch {
         pattern: &str,
         results: &[ProjectSearchResult],
         selected: usize,
+        scroll_offset: usize,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
 
@@ -30,13 +31,8 @@ impl ProjectSearch {
         terminal.print(&" ".repeat((width as usize).saturating_sub(pattern.len() + 18)))?;
         terminal.reset_color()?;
 
-        // Calculate scroll offset to keep selected item visible
+        // Use the provided scroll_offset (managed by App state for symmetric scrolling)
         let visible_lines = (height - 2) as usize; // -2 for header and footer
-        let scroll_offset = if selected >= visible_lines {
-            selected - visible_lines + 1
-        } else {
-            0
-        };
 
         // Draw results with scrolling
         for (i, result) in results.iter()

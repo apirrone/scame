@@ -92,6 +92,7 @@ pub struct App {
     file_picker_pattern: String,
     file_picker_results: Vec<FileSearchResult>,
     file_picker_selected: usize,
+    file_picker_scroll_offset: usize,
     // Track if we've logged highlighting info for this file
     logged_highlighting: bool,
     // Cache highlight spans to avoid re-parsing every frame
@@ -123,10 +124,12 @@ pub struct App {
     command_panel_pattern: String,
     command_panel_results: Vec<Command>,
     command_panel_selected: usize,
+    command_panel_scroll_offset: usize,
     // Project search state
     project_search_pattern: String,
     project_search_results: Vec<ProjectSearchResult>,
     project_search_selected: usize,
+    project_search_scroll_offset: usize,
     // Pending close buffer (for ConfirmCloseTab mode)
     pending_close_buffer_id: Option<crate::workspace::BufferId>,
 }
@@ -179,6 +182,7 @@ impl App {
             file_picker_pattern: String::new(),
             file_picker_results: Vec::new(),
             file_picker_selected: 0,
+            file_picker_scroll_offset: 0,
             search_pattern: String::new(),
             search_start_pos: None,
             search_is_reverse: false,
@@ -197,9 +201,11 @@ impl App {
             command_panel_pattern: String::new(),
             command_panel_results: Vec::new(),
             command_panel_selected: 0,
+            command_panel_scroll_offset: 0,
             project_search_pattern: String::new(),
             project_search_results: Vec::new(),
             project_search_selected: 0,
+            project_search_scroll_offset: 0,
             pending_close_buffer_id: None,
         })
     }
@@ -262,6 +268,7 @@ impl App {
                 file_picker_pattern: String::new(),
                 file_picker_results: Vec::new(),
                 file_picker_selected: 0,
+                file_picker_scroll_offset: 0,
                 logged_highlighting: false,
                 cached_highlights: None,
                 cached_text_hash: 0,
@@ -284,9 +291,11 @@ impl App {
                 command_panel_pattern: String::new(),
                 command_panel_results: Vec::new(),
                 command_panel_selected: 0,
+                command_panel_scroll_offset: 0,
                 project_search_pattern: String::new(),
                 project_search_results: Vec::new(),
                 project_search_selected: 0,
+                project_search_scroll_offset: 0,
                 pending_close_buffer_id: None,
             });
         }
@@ -319,6 +328,7 @@ impl App {
             file_picker_pattern: String::new(),
             file_picker_results: Vec::new(),
             file_picker_selected: 0,
+            file_picker_scroll_offset: 0,
             search_pattern: String::new(),
             search_start_pos: None,
             search_is_reverse: false,
@@ -337,9 +347,11 @@ impl App {
             command_panel_pattern: String::new(),
             command_panel_results: Vec::new(),
             command_panel_selected: 0,
+            command_panel_scroll_offset: 0,
             project_search_pattern: String::new(),
             project_search_results: Vec::new(),
             project_search_selected: 0,
+            project_search_scroll_offset: 0,
             pending_close_buffer_id: None,
         })
     }
@@ -686,6 +698,7 @@ impl App {
                 &self.file_picker_pattern,
                 &self.file_picker_results,
                 self.file_picker_selected,
+                self.file_picker_scroll_offset,
             )?;
         }
 
@@ -696,6 +709,7 @@ impl App {
                 &self.command_panel_pattern,
                 &self.command_panel_results,
                 self.command_panel_selected,
+                self.command_panel_scroll_offset,
             )?;
         }
 
@@ -706,6 +720,7 @@ impl App {
                 &self.project_search_pattern,
                 &self.project_search_results,
                 self.project_search_selected,
+                self.project_search_scroll_offset,
             )?;
         }
 
@@ -1084,11 +1099,20 @@ impl App {
             KeyCode::Up => {
                 if self.file_picker_selected > 0 {
                     self.file_picker_selected -= 1;
+                    // Scroll up if selector moved above visible area
+                    if self.file_picker_selected < self.file_picker_scroll_offset {
+                        self.file_picker_scroll_offset = self.file_picker_selected;
+                    }
                 }
             }
             KeyCode::Down => {
                 if self.file_picker_selected + 1 < self.file_picker_results.len() {
                     self.file_picker_selected += 1;
+                    // Scroll down if selector moved below visible area (13 visible items)
+                    let visible_count = 13;
+                    if self.file_picker_selected >= self.file_picker_scroll_offset + visible_count {
+                        self.file_picker_scroll_offset = self.file_picker_selected - visible_count + 1;
+                    }
                 }
             }
             KeyCode::Char(c) => {
@@ -1114,6 +1138,7 @@ impl App {
 
             self.file_picker_results = self.file_search.search(file_tree, &self.file_picker_pattern, priority_ext);
             self.file_picker_selected = 0;
+            self.file_picker_scroll_offset = 0;
         }
     }
 
@@ -1149,22 +1174,33 @@ impl App {
             KeyCode::Up => {
                 if self.command_panel_selected > 0 {
                     self.command_panel_selected -= 1;
+                    // Scroll up if selector moved above visible area
+                    if self.command_panel_selected < self.command_panel_scroll_offset {
+                        self.command_panel_scroll_offset = self.command_panel_selected;
+                    }
                 }
             }
             KeyCode::Down => {
                 if self.command_panel_selected + 1 < self.command_panel_results.len() {
                     self.command_panel_selected += 1;
+                    // Scroll down if selector moved below visible area (18 visible items)
+                    let visible_count = 18;
+                    if self.command_panel_selected >= self.command_panel_scroll_offset + visible_count {
+                        self.command_panel_scroll_offset = self.command_panel_selected - visible_count + 1;
+                    }
                 }
             }
             KeyCode::Char(c) => {
                 self.command_panel_pattern.push(c);
                 self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
+                self.command_panel_scroll_offset = 0;
             }
             KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.command_panel_pattern.pop();
                 self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
+                self.command_panel_scroll_offset = 0;
             }
             _ => {}
         }
@@ -1222,11 +1258,21 @@ impl App {
             KeyCode::Up => {
                 if self.project_search_selected > 0 {
                     self.project_search_selected -= 1;
+                    // Scroll up if selector moved above visible area
+                    if self.project_search_selected < self.project_search_scroll_offset {
+                        self.project_search_scroll_offset = self.project_search_selected;
+                    }
                 }
             }
             KeyCode::Down => {
                 if self.project_search_selected + 1 < self.project_search_results.len() {
                     self.project_search_selected += 1;
+                    // Scroll down if selector moved below visible area (calculate visible count dynamically)
+                    let (_, term_height) = crossterm::terminal::size().unwrap_or((80, 24));
+                    let visible_lines = ((term_height as f32 * 0.7) as usize).saturating_sub(2);
+                    if self.project_search_selected >= self.project_search_scroll_offset + visible_lines {
+                        self.project_search_scroll_offset = self.project_search_selected - visible_lines + 1;
+                    }
                 }
             }
             KeyCode::Char(c) => {
@@ -1297,6 +1343,7 @@ impl App {
 
         self.project_search_results = results;
         self.project_search_selected = 0;
+        self.project_search_scroll_offset = 0;
     }
 
     /// Execute a command from the command panel
@@ -1329,6 +1376,7 @@ impl App {
                     self.project_search_pattern.clear();
                     self.project_search_results.clear();
                     self.project_search_selected = 0;
+                    self.project_search_scroll_offset = 0;
                     self.message = Some("Project Search".to_string());
                 } else {
                     self.message = Some("No project directory open".to_string());
@@ -1347,6 +1395,7 @@ impl App {
                     self.file_picker_pattern.clear();
                     self.file_picker_results.clear();
                     self.file_picker_selected = 0;
+                    self.file_picker_scroll_offset = 0;
                 } else {
                     self.message = Some("No project directory open".to_string());
                 }
@@ -2574,6 +2623,7 @@ impl App {
                 self.command_panel_pattern.clear();
                 self.command_panel_results = Self::filter_commands("");
                 self.command_panel_selected = 0;
+                self.command_panel_scroll_offset = 0;
                 self.message = Some("Command Palette (Ctrl+X Ctrl+P)".to_string());
                 return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -2583,6 +2633,7 @@ impl App {
                     self.project_search_pattern.clear();
                     self.project_search_results.clear();
                     self.project_search_selected = 0;
+                    self.project_search_scroll_offset = 0;
                     self.message = Some("Project Search (Ctrl+X Ctrl+F)".to_string());
                 } else {
                     self.message = Some("No project directory open".to_string());
@@ -2727,6 +2778,7 @@ impl App {
                     self.file_picker_pattern.clear();
                     self.file_picker_results.clear();
                     self.file_picker_selected = 0;
+                    self.file_picker_scroll_offset = 0;
 
                     // Show what extension is being prioritized
                     if let Some(ext) = buffer.file_path()

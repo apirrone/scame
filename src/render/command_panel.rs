@@ -13,14 +13,19 @@ impl CommandPanel {
         pattern: &str,
         commands: &[Command],
         selected: usize,
+        scroll_offset: usize,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
 
         // Calculate dimensions (centered, 80% width, max 20 lines)
         let width = (term_width as f32 * 0.8) as u16;
-        let height = 20.min(commands.len() as u16 + 2);
+        let max_visible = 18; // Maximum visible commands (20 total height - 2 for header/footer)
+        let height = (max_visible + 2).min(commands.len() as u16 + 2);
         let x = (term_width - width) / 2;
         let y = (term_height - height) / 2;
+
+        // Use the provided scroll_offset (managed by App state for symmetric scrolling)
+        let visible_count = (height - 2) as usize;
 
         // Draw header
         terminal.move_cursor(x, y)?;
@@ -30,12 +35,13 @@ impl CommandPanel {
         terminal.print(&" ".repeat((width as usize).saturating_sub(pattern.len() + 19)))?;
         terminal.reset_color()?;
 
-        // Draw commands
-        for (i, command) in commands.iter().take((height - 2) as usize).enumerate() {
+        // Draw commands with scrolling
+        for (i, command) in commands.iter().skip(scroll_offset).take(visible_count).enumerate() {
             let row = y + 1 + i as u16;
+            let command_index = scroll_offset + i;
             terminal.move_cursor(x, row)?;
 
-            if i == selected {
+            if command_index == selected {
                 terminal.set_bg(Color::Blue)?;
                 terminal.set_fg(Color::White)?;
             } else {
