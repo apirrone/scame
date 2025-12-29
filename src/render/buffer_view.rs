@@ -19,6 +19,7 @@ impl BufferView {
         theme: &Theme,
         diagnostics: Option<&[Diagnostic]>,
         show_diagnostics: bool,
+        ai_suggestion: Option<&String>,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -34,6 +35,9 @@ impl BufferView {
         let top_bars_height = tab_bar_height + path_bar_height;
         let content_height = term_height.saturating_sub(top_bars_height + status_bar_height);
 
+        // Parse AI suggestion into lines if present
+        let ai_suggestion_lines: Option<Vec<&str>> = ai_suggestion.map(|s| s.lines().collect());
+
         // Render each visible line
         for screen_row in 0..content_height {
             let buffer_line = state.viewport.top_line + screen_row as usize;
@@ -42,8 +46,14 @@ impl BufferView {
             terminal.move_cursor(0, screen_row + top_bars_height)?;
             terminal.clear_line()?;
 
-            if buffer_line >= buffer.len_lines() {
-                // Empty line beyond buffer
+            // Check if this is a ghost line (AI suggestion continuation beyond buffer)
+            let is_ghost_line = buffer_line >= buffer.len_lines()
+                && ai_suggestion_lines.is_some()
+                && buffer_line >= state.cursor.line
+                && buffer_line < state.cursor.line + ai_suggestion_lines.as_ref().unwrap().len();
+
+            if buffer_line >= buffer.len_lines() && !is_ghost_line {
+                // Empty line beyond buffer (and not an AI ghost line)
                 terminal.reset_color()?;
                 terminal.set_fg(Color::DarkGrey)?;
                 terminal.print("~")?;
@@ -52,7 +62,7 @@ impl BufferView {
             }
 
             // Check if this line has diagnostics
-            let line_diagnostic = if show_diagnostics {
+            let line_diagnostic = if show_diagnostics && !is_ghost_line {
                 diagnostics.and_then(|diags| {
                     diags.iter().find(|d| {
                         buffer_line >= d.range.0.line && buffer_line <= d.range.1.line
@@ -90,13 +100,37 @@ impl BufferView {
                 }
             }
 
+            // Render ghost line (AI suggestion beyond buffer)
+            if is_ghost_line {
+                // Line index starts from 1 because line 0 is shown on cursor line
+                let suggestion_line_idx = buffer_line - state.cursor.line;
+                if let Some(ref lines) = ai_suggestion_lines {
+                    if suggestion_line_idx < lines.len() {
+                        terminal.set_fg(Color::DarkGrey)?;
+                        terminal.print(lines[suggestion_line_idx])?;
+                        terminal.reset_color()?;
+                    }
+                }
+                continue;
+            }
+
             // Get the line text
             if let Some(line) = buffer.get_line(buffer_line) {
                 // Remove the trailing newline for display
                 let line = line.trim_end_matches(&['\n', '\r'][..]);
 
+                // Only show AI suggestion on the cursor line (first line of suggestion)
+                // Additional lines are shown as ghost lines beyond the buffer
+                let ai_line_to_show = if buffer_line == state.cursor.line && ai_suggestion_lines.is_some() {
+                    Some(ai_suggestion_lines.as_ref().unwrap()[0])
+                } else {
+                    None
+                };
+
+                let show_ai_on_cursor_line = buffer_line == state.cursor.line;
+
                 // Render the line with selection highlighting if applicable
-                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme)?;
+                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line)?;
             }
         }
 
@@ -128,6 +162,8 @@ impl BufferView {
         buffer: &TextBuffer,
         highlight_spans: Option<&[HighlightSpan]>,
         theme: &Theme,
+        ai_line_to_show: Option<&str>,
+        show_ai_on_cursor_line: bool,
     ) -> Result<()> {
         // Calculate byte offset for this line in the buffer
         let line_start_byte = buffer.line_to_byte(line_num);
@@ -245,6 +281,17 @@ impl BufferView {
 
                 char_idx += ch.len_utf8();
                 col_idx += 1;
+            }
+        }
+
+        // Render AI suggestion as ghost text (gray text after cursor)
+        // This only happens on the cursor line, and only if cursor is at the end
+        if let Some(suggestion_line) = ai_line_to_show {
+            let cursor_col = state.cursor.column;
+            if show_ai_on_cursor_line && cursor_col >= line.chars().count() {
+                terminal.set_fg(Color::DarkGrey)?;
+                terminal.print(suggestion_line)?;
+                terminal.reset_color()?;
             }
         }
 

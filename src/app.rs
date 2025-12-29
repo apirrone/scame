@@ -1,7 +1,9 @@
 use crate::backup::BackupManager;
 use crate::buffer::{Change, Position};
+use crate::config::Config;
 use crate::editor::movement::Movement;
 use crate::logger;
+use crate::ai::{AiManager, AiResponse};
 use crate::lsp::{DiagnosticsStore, LspManager, LspResponse};
 use crate::render::{BufferView, FilePicker, StatusBar, Terminal};
 use crate::search::{FileSearch, FileSearchResult};
@@ -11,7 +13,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use regex::RegexBuilder;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub enum ControlFlow {
@@ -70,6 +72,7 @@ pub enum CommandAction {
     ToggleSyntaxHighlighting,
     ToggleSmartIndentation,
     ToggleDiagnostics,
+    ToggleAiCompletions,
 }
 
 pub struct App {
@@ -116,6 +119,13 @@ pub struct App {
     lsp_receiver: Option<mpsc::UnboundedReceiver<LspResponse>>,
     diagnostics_store: DiagnosticsStore,
     navigation_history: crate::lsp::NavigationHistory,
+    // AI completion state
+    ai_manager: Option<AiManager>,
+    ai_receiver: Option<mpsc::UnboundedReceiver<AiResponse>>,
+    ai_suggestion: Option<String>,
+    ai_last_keystroke: Option<Instant>,
+    ai_pending_request: bool,
+    ai_completions_enabled: bool,
     // Completion state
     completion_items: Vec<crate::lsp::CompletionItem>,
     completion_selected: usize,
@@ -195,6 +205,12 @@ impl App {
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
             navigation_history: crate::lsp::NavigationHistory::new(),
+            ai_manager: None,
+            ai_receiver: None,
+            ai_suggestion: None,
+            ai_last_keystroke: None,
+            ai_pending_request: false,
+            ai_completions_enabled: true,
             completion_items: Vec::new(),
             completion_selected: 0,
             completion_scroll_offset: 0,
@@ -285,6 +301,12 @@ impl App {
                 lsp_receiver: None,
                 diagnostics_store: DiagnosticsStore::new(),
                 navigation_history: crate::lsp::NavigationHistory::new(),
+                ai_manager: None,
+                ai_receiver: None,
+                ai_suggestion: None,
+                ai_last_keystroke: None,
+                ai_pending_request: false,
+                ai_completions_enabled: true,
                 completion_items: Vec::new(),
                 completion_selected: 0,
                 completion_scroll_offset: 0,
@@ -341,6 +363,12 @@ impl App {
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
             navigation_history: crate::lsp::NavigationHistory::new(),
+            ai_manager: None,
+            ai_receiver: None,
+            ai_suggestion: None,
+            ai_last_keystroke: None,
+            ai_pending_request: false,
+            ai_completions_enabled: true,
             completion_items: Vec::new(),
             completion_selected: 0,
             completion_scroll_offset: 0,
@@ -357,7 +385,7 @@ impl App {
     }
 
     /// Build list of all available commands
-    fn build_all_commands() -> Vec<Command> {
+    fn build_all_commands(&self) -> Vec<Command> {
         vec![
             Command {
                 name: "Search".to_string(),
@@ -438,29 +466,39 @@ impl App {
                 action: CommandAction::OrganizeImports,
             },
             Command {
-                name: "Toggle Syntax Highlighting".to_string(),
+                name: format!("Toggle Syntax Highlighting [{}]",
+                    if self.enable_syntax_highlighting { "ON" } else { "OFF" }),
                 description: "Enable/disable syntax highlighting for better performance".to_string(),
                 keybinding: None,
                 action: CommandAction::ToggleSyntaxHighlighting,
             },
             Command {
-                name: "Toggle Smart Indentation".to_string(),
+                name: format!("Toggle Smart Indentation [{}]",
+                    if self.smart_indentation { "ON" } else { "OFF" }),
                 description: "Enable/disable smart Python indentation".to_string(),
                 keybinding: Some("Ctrl+X I".to_string()),
                 action: CommandAction::ToggleSmartIndentation,
             },
             Command {
-                name: "Toggle Diagnostics".to_string(),
+                name: format!("Toggle Diagnostics [{}]",
+                    if self.show_diagnostics { "ON" } else { "OFF" }),
                 description: "Enable/disable diagnostic dots/markers".to_string(),
                 keybinding: Some("Ctrl+X D".to_string()),
                 action: CommandAction::ToggleDiagnostics,
+            },
+            Command {
+                name: format!("Toggle AI Completions [{}]",
+                    if self.ai_completions_enabled { "ON" } else { "OFF" }),
+                description: "Enable/disable AI-powered code completions".to_string(),
+                keybinding: None,
+                action: CommandAction::ToggleAiCompletions,
             },
         ]
     }
 
     /// Filter commands by pattern (fuzzy search)
-    fn filter_commands(pattern: &str) -> Vec<Command> {
-        let all_commands = Self::build_all_commands();
+    fn filter_commands(&self, pattern: &str) -> Vec<Command> {
+        let all_commands = self.build_all_commands();
 
         if pattern.is_empty() {
             return all_commands;
@@ -672,6 +710,7 @@ impl App {
                 self.highlighter.theme(),
                 buffer_diagnostics,
                 self.show_diagnostics,
+                self.ai_suggestion.as_ref(),
             )?;
             StatusBar::render(
                 terminal,
@@ -1192,13 +1231,13 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.command_panel_pattern.push(c);
-                self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
+                self.command_panel_results = self.filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
                 self.command_panel_scroll_offset = 0;
             }
             KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.command_panel_pattern.pop();
-                self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
+                self.command_panel_results = self.filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
                 self.command_panel_scroll_offset = 0;
             }
@@ -1617,6 +1656,16 @@ impl App {
             CommandAction::ToggleDiagnostics => {
                 self.show_diagnostics = !self.show_diagnostics;
                 self.message = Some(format!("Diagnostic dots: {}", if self.show_diagnostics { "ON" } else { "OFF" }));
+            }
+            CommandAction::ToggleAiCompletions => {
+                self.ai_completions_enabled = !self.ai_completions_enabled;
+                // Clear any existing suggestion when disabling
+                if !self.ai_completions_enabled {
+                    self.ai_suggestion = None;
+                    self.ai_last_keystroke = None;
+                    self.ai_pending_request = false;
+                }
+                self.message = Some(format!("AI completions: {}", if self.ai_completions_enabled { "ON" } else { "OFF" }));
             }
         }
         Ok(ControlFlow::Continue)
@@ -2614,6 +2663,29 @@ impl App {
             return Ok(ControlFlow::Continue);
         };
 
+        // Dismiss AI suggestion on any key except Tab (for accepting) or regular character input
+        // Character input is handled separately to start new debounce
+        if self.ai_suggestion.is_some() {
+            match (key.code, key.modifiers) {
+                // Tab without modifiers - will be handled later to accept suggestion
+                (KeyCode::Tab, mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                    // Don't dismiss, let the Tab handler accept it
+                }
+                // Regular character without control modifier - will be handled to start new debounce
+                (KeyCode::Char(_), mods) if !mods.contains(KeyModifiers::CONTROL) => {
+                    // Don't dismiss here, character input handler will clear and restart debounce
+                }
+                // Esc - handled separately with message
+                (KeyCode::Esc, KeyModifiers::NONE) => {
+                    // Will be handled below with message
+                }
+                // Any other key - dismiss the suggestion silently
+                _ => {
+                    self.ai_suggestion = None;
+                }
+            }
+        }
+
         // Handle Ctrl+X Ctrl+S (Emacs-style save) and Ctrl+X Ctrl+C (Emacs-style exit)
         if self.waiting_for_second_key {
             self.waiting_for_second_key = false;
@@ -2621,7 +2693,7 @@ impl App {
                 // Ctrl+X Ctrl+P - Command panel
                 self.mode = AppMode::CommandPanel;
                 self.command_panel_pattern.clear();
-                self.command_panel_results = Self::filter_commands("");
+                self.command_panel_results = self.filter_commands("");
                 self.command_panel_selected = 0;
                 self.command_panel_scroll_offset = 0;
                 self.message = Some("Command Palette (Ctrl+X Ctrl+P)".to_string());
@@ -2728,6 +2800,13 @@ impl App {
         }
 
         match (key.code, key.modifiers) {
+            // Esc - Dismiss AI suggestion
+            (KeyCode::Esc, KeyModifiers::NONE) if self.ai_suggestion.is_some() => {
+                self.ai_suggestion = None;
+                self.message = Some("AI suggestion dismissed".to_string());
+                return Ok(ControlFlow::Continue);
+            }
+
             // Ctrl+Q - Quit
             (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                 if self.workspace.has_modified_buffers() {
@@ -3576,8 +3655,38 @@ impl App {
                 editor_state.ensure_cursor_visible();
             }
 
-            // Tab - Smart completion or indentation (but not Ctrl+Tab)
+            // Tab - Accept AI suggestion, smart completion, or indentation (but not Ctrl+Tab)
             (KeyCode::Tab, mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                // Check if there's an AI suggestion to accept
+                if let Some(suggestion) = self.ai_suggestion.take() {
+                    // Accept the AI suggestion by inserting it at cursor
+                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                    let pos = editor_state.cursor.position();
+
+                    // Insert the full suggestion (can be multi-line)
+                    text_buffer.insert(pos, &suggestion)?;
+                    undo_manager.record(Change::Insert {
+                        pos,
+                        text: suggestion.clone(),
+                    });
+
+                    // Move cursor to end of inserted text
+                    // Count newlines to update line number
+                    let newline_count = suggestion.matches('\n').count();
+                    if newline_count > 0 {
+                        editor_state.cursor.line += newline_count;
+                        // Get the last line to determine column position
+                        let last_line = suggestion.lines().last().unwrap_or("");
+                        editor_state.cursor.column = last_line.chars().count();
+                    } else {
+                        editor_state.cursor.column += suggestion.chars().count();
+                    }
+                    editor_state.ensure_cursor_visible();
+
+                    self.message = Some("AI suggestion accepted".to_string());
+                    return Ok(ControlFlow::Continue);
+                }
+
                 // Determine if we should trigger completion or indent
                 let should_complete = if let Some(path) = buffer.file_path() {
                     if crate::lsp::Language::from_path(path).is_some() {
@@ -3673,6 +3782,20 @@ impl App {
                     text: c.to_string(),
                 });
                 Movement::move_right(editor_state, text_buffer);
+
+                // Trigger AI completion debouncing (only if enabled)
+                if self.ai_completions_enabled {
+                    // Clear any existing suggestion and reset timer
+                    self.ai_suggestion = None;
+                    self.ai_last_keystroke = Some(Instant::now());
+                    // Cancel any pending AI request
+                    if self.ai_pending_request {
+                        if let Some(manager) = &self.ai_manager {
+                            let _ = manager.cancel_pending();
+                        }
+                        self.ai_pending_request = false;
+                    }
+                }
             }
 
             _ => {}
@@ -3696,6 +3819,87 @@ impl App {
 
         // Notify LSP about any currently open file
         self.notify_lsp_did_open();
+
+        Ok(())
+    }
+
+    /// Initialize the AI completion manager
+    pub fn initialize_ai(&mut self) -> Result<()> {
+        use crate::ai::provider::CompletionProvider;
+        use crate::ai::providers::{ClaudeProvider, CopilotProvider, LocalLlmProvider, OpenAiProvider};
+        use std::sync::Arc;
+
+        // Load configuration
+        let config = Config::load()?;
+
+        // Check if AI is enabled
+        if !config.ai.enabled {
+            return Ok(());
+        }
+
+        // Create provider based on configuration
+        let provider: Arc<dyn CompletionProvider> = match config.ai.provider.as_str() {
+            "copilot" => {
+                let api_token = match config.ai.copilot.api_token {
+                    Some(token) if !token.is_empty() => token,
+                    _ => {
+                        logger::log("AI completion disabled: No Copilot API token configured");
+                        return Ok(());
+                    }
+                };
+                Arc::new(CopilotProvider::new(api_token))
+            }
+            "openai" => {
+                let api_key = match config.ai.openai.api_key {
+                    Some(key) if !key.is_empty() => key,
+                    _ => {
+                        logger::log("AI completion disabled: No OpenAI API key configured");
+                        return Ok(());
+                    }
+                };
+                Arc::new(OpenAiProvider::new(
+                    api_key,
+                    config.ai.openai.model,
+                ))
+            }
+            "claude" => {
+                let api_key = match config.ai.claude.api_key {
+                    Some(key) if !key.is_empty() => key,
+                    _ => {
+                        logger::log("AI completion disabled: No Claude API key configured");
+                        return Ok(());
+                    }
+                };
+                Arc::new(ClaudeProvider::new(
+                    api_key,
+                    config.ai.claude.model,
+                ))
+            }
+            "local" => {
+                if config.ai.local.endpoint.is_empty() {
+                    logger::log("AI completion disabled: No local LLM endpoint configured");
+                    return Ok(());
+                }
+                Arc::new(LocalLlmProvider::new(config.ai.local.endpoint))
+            }
+            _ => {
+                logger::log(&format!(
+                    "AI completion disabled: Unknown provider '{}'",
+                    config.ai.provider
+                ));
+                return Ok(());
+            }
+        };
+
+        // Create AI manager
+        let (manager, receiver) = AiManager::new(provider);
+        self.ai_manager = Some(manager);
+        self.ai_receiver = Some(receiver);
+
+        logger::log(&format!(
+            "AI completion enabled with provider: {}",
+            config.ai.provider
+        ));
 
         Ok(())
     }
@@ -3864,6 +4068,193 @@ impl App {
     pub fn shutdown_lsp(&mut self) -> Result<()> {
         if let Some(manager) = &mut self.lsp_manager {
             manager.shutdown()?;
+        }
+        Ok(())
+    }
+
+    /// Poll for AI completion messages (non-blocking)
+    pub fn poll_ai_messages(&mut self) -> bool {
+        // Collect responses first to avoid borrow checker issues
+        let mut responses = Vec::new();
+        if let Some(receiver) = &mut self.ai_receiver {
+            while let Ok(response) = receiver.try_recv() {
+                responses.push(response);
+            }
+        }
+
+        let had_updates = !responses.is_empty();
+
+        // Handle all collected responses
+        for response in responses {
+            self.handle_ai_response(response);
+        }
+
+        had_updates
+    }
+
+    /// Handle an AI completion response
+    fn handle_ai_response(&mut self, response: AiResponse) {
+        match response {
+            AiResponse::Completion {
+                buffer_id,
+                text,
+                provider: _,
+            } => {
+                // Only show suggestion if this is still the active buffer
+                if let Some(active_buffer_id) = self.layout.active_buffer() {
+                    if active_buffer_id == buffer_id {
+                        // Get the current line to detect overlap
+                        let cleaned_text = if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                            let cursor_pos = buffer.editor_state().cursor.position();
+                            if let Some(current_line) = buffer.text_buffer().get_line(cursor_pos.line) {
+                                // Get text from line start to cursor
+                                let line_chars: Vec<char> = current_line.chars().collect();
+                                let text_before_cursor: String = line_chars
+                                    .iter()
+                                    .take(cursor_pos.column)
+                                    .collect();
+
+                                // Strip overlapping prefix from suggestion
+                                Self::strip_overlap(&text_before_cursor, &text)
+                            } else {
+                                text
+                            }
+                        } else {
+                            text
+                        };
+
+                        // Store the cleaned suggestion
+                        self.ai_suggestion = Some(cleaned_text);
+                        self.ai_pending_request = false;
+                    }
+                }
+            }
+            AiResponse::Error(error) => {
+                logger::log(&format!("AI completion error: {}", error));
+                self.ai_pending_request = false;
+            }
+        }
+    }
+
+    /// Shutdown the AI manager
+    pub fn shutdown_ai(&mut self) -> Result<()> {
+        if let Some(manager) = &mut self.ai_manager {
+            manager.shutdown()?;
+        }
+        Ok(())
+    }
+
+    /// Strip overlapping prefix from AI suggestion
+    /// If suggestion starts with text already on the line, remove that prefix
+    fn strip_overlap(text_before_cursor: &str, suggestion: &str) -> String {
+        // Try to find the longest suffix of text_before_cursor that matches
+        // a prefix of the suggestion
+        let text_before = text_before_cursor.trim_end();
+
+        // Try progressively shorter suffixes of the current text
+        for start_idx in 0..text_before.len() {
+            let suffix = &text_before[start_idx..];
+            if suggestion.starts_with(suffix) {
+                // Found overlap - strip it
+                return suggestion[suffix.len()..].to_string();
+            }
+        }
+
+        // No overlap found, return suggestion as-is
+        suggestion.to_string()
+    }
+
+    /// Trigger an AI completion request for the current cursor position
+    fn trigger_ai_completion(&mut self) -> Result<()> {
+        use crate::ai::provider::CompletionRequest;
+        use crate::ai::AiRequest;
+
+        // Check if AI manager is available
+        if self.ai_manager.is_none() {
+            return Ok(());
+        }
+
+        // Get active buffer
+        let buffer_id = match self.layout.active_buffer() {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+
+        let buffer = match self.workspace.get_buffer(buffer_id) {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+
+        // Get file path and language
+        let file_path = buffer.file_path().cloned().unwrap_or_else(|| {
+            std::path::PathBuf::from("untitled")
+        });
+
+        let language = if let Some(path) = buffer.file_path() {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("txt")
+                .to_string()
+        } else {
+            "txt".to_string()
+        };
+
+        // Get cursor position
+        let cursor_pos = buffer.editor_state().cursor.position();
+
+        // Get text before and after cursor
+        let text_buffer = buffer.text_buffer();
+        let full_text = text_buffer.to_string();
+
+        // Calculate byte offset of cursor position
+        let mut byte_offset = 0;
+        for (line_idx, line) in full_text.lines().enumerate() {
+            if line_idx < cursor_pos.line {
+                byte_offset += line.len() + 1; // +1 for newline
+            } else if line_idx == cursor_pos.line {
+                byte_offset += cursor_pos.column.min(line.len());
+                break;
+            }
+        }
+
+        // Split text at cursor
+        let (before, after) = full_text.split_at(byte_offset);
+        let code_before_cursor = before.chars().rev().take(2000).collect::<String>()
+            .chars().rev().collect::<String>(); // Take last 2000 chars
+        let code_after_cursor = after.chars().take(500).collect::<String>(); // Take next 500 chars
+
+        // Create completion request
+        let request = CompletionRequest {
+            file_path,
+            language,
+            code_before_cursor,
+            code_after_cursor,
+            cursor_position: cursor_pos,
+        };
+
+        // Send request to AI manager
+        if let Some(manager) = &self.ai_manager {
+            manager.request_completion(request, buffer_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Check debounce timer and trigger AI completion if needed
+    pub fn check_ai_debounce(&mut self) -> Result<()> {
+        // Skip if AI completions are disabled
+        if !self.ai_completions_enabled {
+            return Ok(());
+        }
+
+        if let Some(last_keystroke) = self.ai_last_keystroke {
+            // Check if 150ms has elapsed since last keystroke
+            if last_keystroke.elapsed() >= Duration::from_millis(150) && !self.ai_pending_request {
+                // Trigger completion request
+                self.trigger_ai_completion()?;
+                self.ai_last_keystroke = None;
+                self.ai_pending_request = true;
+            }
         }
         Ok(())
     }

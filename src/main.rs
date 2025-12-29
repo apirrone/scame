@@ -1,3 +1,4 @@
+mod ai;
 mod app;
 mod buffer;
 mod editor;
@@ -48,6 +49,9 @@ fn main() -> anyhow::Result<()> {
     // Initialize LSP
     app.initialize_lsp()?;
 
+    // Initialize AI completion
+    app.initialize_ai()?;
+
     // Initialize terminal
     let terminal = Terminal::new()?;
 
@@ -59,8 +63,14 @@ fn main() -> anyhow::Result<()> {
         // Poll for LSP messages (non-blocking)
         let had_lsp_updates = app.poll_lsp_messages();
 
-        // Only render if LSP had updates
-        if had_lsp_updates {
+        // Poll for AI completion messages (non-blocking)
+        let had_ai_updates = app.poll_ai_messages();
+
+        // Check AI debounce timer and trigger completion if needed
+        app.check_ai_debounce()?;
+
+        // Only render if LSP or AI had updates
+        if had_lsp_updates || had_ai_updates {
             app.render(&terminal)?;
         }
 
@@ -83,6 +93,9 @@ fn main() -> anyhow::Result<()> {
 
     // Shutdown LSP
     app.shutdown_lsp()?;
+
+    // Shutdown AI
+    app.shutdown_ai()?;
 
     // Cleanup
     terminal.cleanup()?;
