@@ -798,6 +798,24 @@ impl App {
                 let available_width = (pane_rect.width as usize).saturating_sub(line_num_width);
                 let line_start_byte = text_buffer.line_to_byte(buffer_line);
 
+                // Get selection range for this line
+                let selection_range = if let Some(selection) = &editor_state.selection {
+                    let (start, end) = selection.range();
+                    if buffer_line >= start.line && buffer_line <= end.line {
+                        let start_col = if buffer_line == start.line { start.column } else { 0 };
+                        let end_col = if buffer_line == end.line { end.column } else { line.chars().count() };
+                        Some((start_col, end_col))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Selection colors
+                let selection_bg = crossterm::style::Color::Rgb { r: 100, g: 180, b: 255 };
+                let selection_fg = crossterm::style::Color::Black;
+
                 if let Some(highlight_spans) = highlights {
                     // Render with syntax highlighting
                     let chars: Vec<char> = line.chars().collect();
@@ -811,32 +829,65 @@ impl App {
                         let ch = chars[col_idx];
                         let byte_offset = line_start_byte + line.chars().take(col_idx).map(|c| c.len_utf8()).sum::<usize>();
 
-                        // Find highlight color for this position
-                        let color = highlight_spans
-                            .iter()
-                            .find(|span| byte_offset >= span.start_byte && byte_offset < span.end_byte)
-                            .map(|span| self.highlighter.theme().color_for(span.token_type))
-                            .unwrap_or(crossterm::style::Color::Reset);
+                        // Check if this character is selected
+                        let is_selected = selection_range
+                            .map(|(start, end)| col_idx >= start && col_idx < end)
+                            .unwrap_or(false);
 
-                        if !is_active {
-                            terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                        if is_selected {
+                            // Render with selection highlighting
+                            terminal.set_bg(selection_bg)?;
+                            terminal.set_fg(selection_fg)?;
                         } else {
+                            // Find highlight color for this position
+                            let color = highlight_spans
+                                .iter()
+                                .find(|span| byte_offset >= span.start_byte && byte_offset < span.end_byte)
+                                .map(|span| self.highlighter.theme().color_for(span.token_type))
+                                .unwrap_or(crossterm::style::Color::Reset);
+
+                            // Use syntax highlighting color for both active and inactive panes
                             terminal.set_fg(color)?;
                         }
                         terminal.print(&ch.to_string())?;
+                        terminal.reset_color()?;
                         current_col += 1;
                     }
                     terminal.reset_color()?;
                 } else {
-                    // Render without syntax highlighting
-                    let chars: Vec<char> = line.chars().skip(editor_state.viewport.left_column).take(available_width).collect();
-                    let line_str: String = chars.into_iter().collect();
+                    // Render without syntax highlighting but with selection
+                    let chars: Vec<char> = line.chars().collect();
 
-                    if !is_active {
-                        terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                    if let Some((start_col, end_col)) = selection_range {
+                        // Render with selection highlighting
+                        for (col_idx, &ch) in chars.iter().enumerate() {
+                            if col_idx < editor_state.viewport.left_column {
+                                continue;
+                            }
+                            if col_idx >= editor_state.viewport.left_column + available_width {
+                                break;
+                            }
+
+                            if col_idx >= start_col && col_idx < end_col {
+                                terminal.set_bg(selection_bg)?;
+                                terminal.set_fg(selection_fg)?;
+                            } else if !is_active {
+                                terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                            }
+                            terminal.print(&ch.to_string())?;
+                            terminal.reset_color()?;
+                        }
+                    } else {
+                        // No selection, just render normally
+                        let chars: Vec<char> = line.chars().skip(editor_state.viewport.left_column).take(available_width).collect();
+                        let line_str: String = chars.into_iter().collect();
+
+                        if !is_active {
+                            terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                        }
+                        terminal.print(&line_str)?;
+                        terminal.reset_color()?;
                     }
-                    terminal.print(&line_str)?;
-                    terminal.reset_color()?;
                 }
             }
         }
@@ -1723,8 +1774,10 @@ impl App {
                 self.message = None;
                 self.search_pattern.clear();
                 // Clear selection when exiting search
-                if let Some(buffer) = self.workspace.active_buffer_mut() {
-                    buffer.editor_state_mut().clear_selection();
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        buffer.editor_state_mut().clear_selection();
+                    }
                 }
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1733,8 +1786,10 @@ impl App {
                 self.message = None;
                 self.search_pattern.clear();
                 // Clear selection when exiting search
-                if let Some(buffer) = self.workspace.active_buffer_mut() {
-                    buffer.editor_state_mut().clear_selection();
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        buffer.editor_state_mut().clear_selection();
+                    }
                 }
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1742,26 +1797,32 @@ impl App {
                 if !self.search_pattern.is_empty() {
                     self.search_is_reverse = false;
                     // Save current position in case search fails
-                    let saved_pos = if let Some(buffer) = self.workspace.active_buffer() {
-                        Some(buffer.editor_state().cursor.position())
+                    let saved_pos = if let Some(buffer_id) = self.layout.active_buffer() {
+                        self.workspace.get_buffer(buffer_id).map(|b| b.editor_state().cursor.position())
                     } else {
                         None
                     };
 
                     // Move cursor forward by one character to find next match
-                    if let Some(buffer) = self.workspace.active_buffer_mut() {
-                        let current_pos = buffer.editor_state().cursor.position();
-                        let text_buffer = buffer.text_buffer();
-                        let current_char = text_buffer.pos_to_char(current_pos)?;
-                        let new_pos = text_buffer.char_to_pos(current_char + 1);
-                        buffer.editor_state_mut().cursor.set_position(new_pos);
+                    if let Some(buffer_id) = self.layout.active_buffer() {
+                        if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                            let current_pos = buffer.editor_state().cursor.position();
+                            let text_buffer = buffer.text_buffer();
+                            let current_char = text_buffer.pos_to_char(current_pos)?;
+                            let new_pos = text_buffer.char_to_pos(current_char + 1);
+                            buffer.editor_state_mut().cursor.set_position(new_pos);
+                        }
                     }
 
                     // Try to search
                     if !self.perform_search()? {
                         // No match found, restore position and show message
                         if let Some(pos) = saved_pos {
-                            self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(pos);
+                            if let Some(buffer_id) = self.layout.active_buffer() {
+                                if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                    buffer.editor_state_mut().cursor.set_position(pos);
+                                }
+                            }
                         }
                         self.message = Some("Last occurrence".to_string());
                     }
@@ -1772,20 +1833,22 @@ impl App {
                 if !self.search_pattern.is_empty() {
                     self.search_is_reverse = true;
                     // Save current position in case search fails
-                    let saved_pos = if let Some(buffer) = self.workspace.active_buffer() {
-                        Some(buffer.editor_state().cursor.position())
+                    let saved_pos = if let Some(buffer_id) = self.layout.active_buffer() {
+                        self.workspace.get_buffer(buffer_id).map(|b| b.editor_state().cursor.position())
                     } else {
                         None
                     };
 
                     // Move cursor backward by one character to find previous match
-                    if let Some(buffer) = self.workspace.active_buffer_mut() {
-                        let current_pos = buffer.editor_state().cursor.position();
-                        let text_buffer = buffer.text_buffer();
-                        let current_char = text_buffer.pos_to_char(current_pos)?;
-                        if current_char > 0 {
-                            let new_pos = text_buffer.char_to_pos(current_char - 1);
-                            buffer.editor_state_mut().cursor.set_position(new_pos);
+                    if let Some(buffer_id) = self.layout.active_buffer() {
+                        if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                            let current_pos = buffer.editor_state().cursor.position();
+                            let text_buffer = buffer.text_buffer();
+                            let current_char = text_buffer.pos_to_char(current_pos)?;
+                            if current_char > 0 {
+                                let new_pos = text_buffer.char_to_pos(current_char - 1);
+                                buffer.editor_state_mut().cursor.set_position(new_pos);
+                            }
                         }
                     }
 
@@ -1793,7 +1856,11 @@ impl App {
                     if !self.perform_search()? {
                         // No match found, restore position and show message
                         if let Some(pos) = saved_pos {
-                            self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(pos);
+                            if let Some(buffer_id) = self.layout.active_buffer() {
+                                if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                    buffer.editor_state_mut().cursor.set_position(pos);
+                                }
+                            }
                         }
                         self.message = Some("First occurrence".to_string());
                     }
@@ -1808,7 +1875,11 @@ impl App {
                 // Re-search with new mode if pattern exists
                 if !self.search_pattern.is_empty() {
                     if let Some(start_pos) = self.search_start_pos {
-                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                        if let Some(buffer_id) = self.layout.active_buffer() {
+                            if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                buffer.editor_state_mut().cursor.set_position(start_pos);
+                            }
+                        }
                     }
                     let _ = self.perform_search();
                 }
@@ -1870,7 +1941,11 @@ impl App {
                 // Reset to start position before searching to stay on current match
                 if !self.search_pattern.is_empty() {
                     if let Some(start_pos) = self.search_start_pos {
-                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                        if let Some(buffer_id) = self.layout.active_buffer() {
+                            if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                buffer.editor_state_mut().cursor.set_position(start_pos);
+                            }
+                        }
                     }
                     let _ = self.perform_search(); // Ignore errors for incremental search
                 }
@@ -1883,7 +1958,11 @@ impl App {
                 self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
                 // Reset to start position and re-search with shorter pattern
                 if let Some(start_pos) = self.search_start_pos {
-                    self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                    if let Some(buffer_id) = self.layout.active_buffer() {
+                        if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                            buffer.editor_state_mut().cursor.set_position(start_pos);
+                        }
+                    }
                 }
                 if !self.search_pattern.is_empty() {
                     let _ = self.perform_search();
@@ -1897,7 +1976,10 @@ impl App {
     /// Perform search from current cursor position
     /// Returns true if a match was found, false otherwise
     fn perform_search(&mut self) -> Result<bool> {
-        let Some(buffer) = self.workspace.active_buffer_mut() else {
+        let Some(buffer_id) = self.layout.active_buffer() else {
+            return Ok(false);
+        };
+        let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
             return Ok(false);
         };
 
@@ -2363,6 +2445,15 @@ impl App {
                     self.message = Some("Split closed".to_string());
                 }
                 return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('1')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X 1 - Close split and go to single pane mode (emacs-style)
+                if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+                    self.layout.close_split();
+                    self.message = Some("Split closed".to_string());
+                } else {
+                    self.message = Some("Already in single pane mode".to_string());
+                }
+                return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('o') | KeyCode::Char('O')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X O - Switch pane (emacs-style)
                 if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
@@ -2385,6 +2476,36 @@ impl App {
                     return Ok(ControlFlow::Continue);
                 }
                 return Ok(ControlFlow::Exit);
+            }
+
+            // Ctrl+W - Close current buffer/tab
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    // Check if buffer is modified
+                    if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                        if buffer.text_buffer().is_modified() {
+                            self.message = Some("Buffer has unsaved changes (save first)".to_string());
+                        } else {
+                            // Close the buffer
+                            if let Err(e) = self.workspace.close_buffer(buffer_id) {
+                                self.message = Some(format!("Error closing buffer: {}", e));
+                            } else {
+                                // If there are remaining buffers, switch to another one
+                                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                                if let Some(&next_id) = buffer_ids.first() {
+                                    let pane = self.layout.active_pane();
+                                    self.layout.set_buffer(pane, next_id);
+                                    self.message = Some("Buffer closed".to_string());
+                                } else {
+                                    // No more buffers, exit
+                                    self.message = Some("All buffers closed".to_string());
+                                    return Ok(ControlFlow::Exit);
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(ControlFlow::Continue);
             }
 
             // Ctrl+P - File picker
@@ -2607,10 +2728,8 @@ impl App {
                 }
             }
 
-            // Ctrl+Shift+Z - Redo
-            (KeyCode::Char('z'), mods)
-                if mods.contains(KeyModifiers::CONTROL) && mods.contains(KeyModifiers::SHIFT) =>
-            {
+            // Ctrl+Y - Redo
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                 if let Some(change) = buffer.undo_manager_mut().redo() {
                     buffer.apply_change(&change)?;
                     buffer.undo_manager_mut().finish_undo_redo();

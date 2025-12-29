@@ -59,6 +59,11 @@ impl LayoutManager {
         }
     }
 
+    pub fn close_split(&mut self) {
+        self.mode = LayoutMode::Single;
+        self.active_pane = PaneId::Left;
+    }
+
     pub fn active_buffer(&self) -> Option<BufferId> {
         match self.active_pane {
             PaneId::Left => self.left_buffer,
