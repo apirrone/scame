@@ -106,8 +106,9 @@ impl Movement {
     }
 
     /// Helper: check if character is a word boundary
+    /// Note: underscores are NOT word characters - they separate words
     fn is_word_char(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
+        c.is_alphanumeric()
     }
 
     /// Move to the start of the previous word
@@ -160,30 +161,39 @@ impl Movement {
             let chars: Vec<char> = line_text.chars().collect();
             let line_len = chars.len();
 
-            // Skip current word
-            if col < line_len {
-                let in_word = chars.get(col).map_or(false, |&c| Self::is_word_char(c));
+            // If we're on whitespace, skip it first
+            if col < line_len && chars.get(col).map_or(false, |&c| c.is_whitespace()) {
+                while col < line_len && chars.get(col).map_or(false, |&c| c.is_whitespace()) {
+                    col += 1;
+                }
+            } else if col < line_len && Self::is_word_char(chars[col]) {
+                // If we're in a word, move to the end of it
+                while col < line_len && chars.get(col).map_or(false, |&c| Self::is_word_char(c)) {
+                    col += 1;
+                }
+            } else if col < line_len {
+                // We're on punctuation or special char, skip to next word boundary
+                let current_type = chars[col];
                 while col < line_len {
-                    if let Some(&current_char) = chars.get(col) {
-                        if Self::is_word_char(current_char) != in_word {
-                            break;
-                        }
-                        col += 1;
-                    } else {
+                    let ch = chars[col];
+                    if Self::is_word_char(ch) || ch.is_whitespace() || ch != current_type {
                         break;
                     }
+                    col += 1;
                 }
-            }
-
-            // Skip whitespace
-            while col < line_len && chars.get(col).map_or(false, |&c| c.is_whitespace()) {
-                col += 1;
             }
 
             // If we're at the end of the line, move to next line
             if col >= line_len && line + 1 < buffer.len_lines() {
                 line += 1;
                 col = 0;
+                // Skip leading whitespace on next line
+                if let Some(next_line_text) = buffer.get_line(line) {
+                    let next_chars: Vec<char> = next_line_text.chars().collect();
+                    while col < next_chars.len() && next_chars.get(col).map_or(false, |&c| c.is_whitespace()) {
+                        col += 1;
+                    }
+                }
             }
         }
 

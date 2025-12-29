@@ -133,21 +133,26 @@ impl BufferView {
             None
         };
 
+        // Selection colors - use bright cyan background with black text for maximum contrast
+        let selection_bg = Color::Rgb { r: 100, g: 180, b: 255 }; // Bright blue
+        let selection_fg = Color::Black;
+
         // If no syntax highlighting, use simple rendering
         if highlight_spans.is_none() {
             if let Some((start_col, end_col)) = selection_range {
-                // Render with selection only
-                if start_col > 0 {
-                    terminal.print(&line[..start_col.min(line.len())])?;
-                }
-                if end_col > start_col && start_col < line.len() {
-                    terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
-                    terminal.set_fg(Color::White)?;
-                    terminal.print(&line[start_col..end_col.min(line.len())])?;
-                    terminal.reset_color()?;
-                }
-                if end_col < line.len() {
-                    terminal.print(&line[end_col..])?;
+                // Render with selection - need to work character-by-character
+                // because start_col/end_col are character positions, not byte offsets
+                let chars: Vec<char> = line.chars().collect();
+
+                for (col_idx, &ch) in chars.iter().enumerate() {
+                    if col_idx >= start_col && col_idx < end_col {
+                        terminal.set_bg(selection_bg)?;
+                        terminal.set_fg(selection_fg)?;
+                        terminal.print(&ch.to_string())?;
+                        terminal.reset_color()?;
+                    } else {
+                        terminal.print(&ch.to_string())?;
+                    }
                 }
             } else {
                 terminal.print(line)?;
@@ -157,8 +162,6 @@ impl BufferView {
 
         // Render with syntax highlighting
         let spans = highlight_spans.unwrap();
-        let mut current_pos = 0;
-        let mut current_color: Option<Color> = None;
 
         // Filter spans that overlap with this line
         let line_spans: Vec<_> = spans
@@ -166,60 +169,69 @@ impl BufferView {
             .filter(|span| span.start_byte < line_end_byte && span.end_byte > line_start_byte)
             .collect();
 
-        for byte_offset in 0..line.len() {
-            let absolute_byte = line_start_byte + byte_offset;
-            let is_selected = selection_range
-                .map(|(start, end)| byte_offset >= start && byte_offset < end)
-                .unwrap_or(false);
+        // Simple batching: group consecutive selected/non-selected characters
+        let chars: Vec<char> = line.chars().collect();
 
-            // Find the span for this byte
-            let token_color = if !is_selected {
-                line_spans
-                    .iter()
-                    .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
-                    .map(|span| theme.color_for(span.token_type))
-            } else {
-                None
-            };
-
-            // If color changed, flush previous segment
-            if token_color != current_color {
-                if current_pos < byte_offset {
-                    // Flush previous segment
-                    if current_color.is_some() || selection_range.is_some() {
-                        terminal.reset_color()?;
-                    }
-                    if let Some((start, end)) = selection_range {
-                        if current_pos >= start && current_pos < end {
-                            terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
-                            terminal.set_fg(Color::White)?;
-                        } else if let Some(color) = current_color {
-                            terminal.set_fg(color)?;
-                        }
-                    } else if let Some(color) = current_color {
-                        terminal.set_fg(color)?;
-                    }
-                    terminal.print(&line[current_pos..byte_offset])?;
-                }
-                current_color = token_color;
-                current_pos = byte_offset;
-            }
+        if chars.is_empty() {
+            terminal.reset_color()?;
+            return Ok(());
         }
 
-        // Flush remaining segment
-        if current_pos < line.len() {
-            terminal.reset_color()?;
-            if let Some((start, end)) = selection_range {
-                if current_pos >= start && current_pos < end {
-                    terminal.set_bg(Color::Rgb { r: 51, g: 102, b: 153 })?; // Blue background
-                    terminal.set_fg(Color::White)?;
-                } else if let Some(color) = current_color {
-                    terminal.set_fg(color)?;
+        let mut char_idx = 0;
+        let mut col_idx = 0;
+
+        while col_idx < chars.len() {
+            let absolute_byte = line_start_byte + char_idx;
+
+            // Check if current character is selected
+            let is_selected = selection_range
+                .map(|(start, end)| col_idx >= start && col_idx < end)
+                .unwrap_or(false);
+
+            if is_selected {
+                // Find the end of the selected region
+                let mut end_col = col_idx;
+                while end_col < chars.len() {
+                    let is_still_selected = selection_range
+                        .map(|(start, end)| end_col >= start && end_col < end)
+                        .unwrap_or(false);
+                    if !is_still_selected {
+                        break;
+                    }
+                    end_col += 1;
                 }
-            } else if let Some(color) = current_color {
-                terminal.set_fg(color)?;
+
+                // Render the entire selected region at once
+                let selected_text: String = chars[col_idx..end_col].iter().collect();
+                terminal.set_bg(selection_bg)?;
+                terminal.set_fg(selection_fg)?;
+                terminal.print(&selected_text)?;
+                terminal.reset_color()?;
+
+                // Advance
+                for i in col_idx..end_col {
+                    char_idx += chars[i].len_utf8();
+                }
+                col_idx = end_col;
+            } else {
+                // Non-selected character - just print with syntax color if available
+                let ch = chars[col_idx];
+                let token_color = line_spans
+                    .iter()
+                    .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
+                    .map(|span| theme.color_for(span.token_type));
+
+                if let Some(color) = token_color {
+                    terminal.set_fg(color)?;
+                    terminal.print(&ch.to_string())?;
+                    terminal.reset_color()?;
+                } else {
+                    terminal.print(&ch.to_string())?;
+                }
+
+                char_idx += ch.len_utf8();
+                col_idx += 1;
             }
-            terminal.print(&line[current_pos..])?;
         }
 
         terminal.reset_color()?;

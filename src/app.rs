@@ -871,6 +871,30 @@ impl App {
                 // Re-handle the key event in normal mode
                 return self.handle_normal_mode(key);
             }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+A: exit search mode and move to beginning of line
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+                // Re-handle the key event in normal mode
+                return self.handle_normal_mode(key);
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+E: exit search mode and move to end of line
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.search_pattern.clear();
+                // Clear selection when exiting search
+                if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    buffer.editor_state_mut().clear_selection();
+                }
+                // Re-handle the key event in normal mode
+                return self.handle_normal_mode(key);
+            }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Add character to search pattern
                 self.search_pattern.push(c);
@@ -879,7 +903,11 @@ impl App {
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
                 // Incremental search - search as we type
+                // Reset to start position before searching to stay on current match
                 if !self.search_pattern.is_empty() {
+                    if let Some(start_pos) = self.search_start_pos {
+                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                    }
                     let _ = self.perform_search(); // Ignore errors for incremental search
                 }
             }
@@ -889,11 +917,12 @@ impl App {
                 let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("{}{}: {}", search_type, regex_indicator, self.search_pattern));
-                // Reset to start position when pattern changes
-                if let Some(buffer) = self.workspace.active_buffer() {
-                    if let Some(start_pos) = self.search_start_pos {
-                        self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
-                    }
+                // Reset to start position and re-search with shorter pattern
+                if let Some(start_pos) = self.search_start_pos {
+                    self.workspace.active_buffer_mut().unwrap().editor_state_mut().cursor.set_position(start_pos);
+                }
+                if !self.search_pattern.is_empty() {
+                    let _ = self.perform_search();
                 }
             }
             _ => {}
@@ -928,7 +957,7 @@ impl App {
                         }
                         last_match
                     } else {
-                        // Forward regex search
+                        // Forward regex search - start from current cursor position
                         let after_chars: String = text.chars().skip(current_char_idx).collect();
                         re.find(&after_chars).map(|m| {
                             let char_start = current_char_idx + after_chars[..m.start()].chars().count();
@@ -957,7 +986,7 @@ impl App {
                     (char_idx, match_len)
                 })
             } else {
-                // Forward search (start from next character)
+                // Forward search - start from current cursor position
                 let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
                 after_chars.find(&pattern_lower).map(|byte_offset| {
                     let char_idx = current_char_idx + after_chars[..byte_offset].chars().count();
@@ -969,14 +998,14 @@ impl App {
 
         if let Some((char_idx, match_len)) = found_match {
             let pos = buffer.text_buffer().char_to_pos(char_idx);
-
-            // Move cursor to found position
-            buffer.editor_state_mut().cursor.set_position(pos);
-            buffer.editor_state_mut().ensure_cursor_visible();
-
-            // Select the found text
             let end_char_idx = char_idx + match_len;
             let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
+
+            // Move cursor to END of match (not start) to avoid interfering with first character highlight
+            buffer.editor_state_mut().cursor.set_position(end_pos);
+            buffer.editor_state_mut().ensure_cursor_visible();
+
+            // Select the found text (anchor at start, head at end)
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
 
             self.message = Some(format!("Found: {}", self.search_pattern));
@@ -1031,14 +1060,14 @@ impl App {
 
         if let Some((char_idx, match_len)) = found_match {
             let pos = buffer.text_buffer().char_to_pos(char_idx);
-
-            // Move cursor to found position
-            buffer.editor_state_mut().cursor.set_position(pos);
-            buffer.editor_state_mut().ensure_cursor_visible();
-
-            // Select the found text
             let end_char_idx = char_idx + match_len;
             let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
+
+            // Move cursor to END of match (not start) to avoid interfering with first character highlight
+            buffer.editor_state_mut().cursor.set_position(end_pos);
+            buffer.editor_state_mut().ensure_cursor_visible();
+
+            // Select the found text (anchor at start, head at end)
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
 
             Ok(true)
@@ -1121,7 +1150,7 @@ impl App {
                         let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
                         let pos = editor_state.cursor.position();
 
-                        // Find the start of the current word (go back while alphanumeric or underscore)
+                        // Find the start of the current word (go back while alphanumeric)
                         let line = text_buffer.get_line(pos.line).unwrap_or_default();
                         let mut word_start_col = pos.column;
                         let chars: Vec<char> = line.chars().collect();
@@ -1130,7 +1159,7 @@ impl App {
                             let idx = word_start_col - 1;
                             if idx < chars.len() {
                                 let ch = chars[idx];
-                                if ch.is_alphanumeric() || ch == '_' {
+                                if ch.is_alphanumeric() {
                                     word_start_col -= 1;
                                 } else {
                                     break;
@@ -1760,7 +1789,7 @@ impl App {
                             if pos.column > 0 && pos.column <= chars.len() {
                                 let prev_char = chars[pos.column - 1];
                                 // Complete after dot or if we're in the middle of a word
-                                prev_char == '.' || prev_char.is_alphanumeric() || prev_char == '_'
+                                prev_char == '.' || prev_char.is_alphanumeric()
                             } else {
                                 false
                             }
@@ -1928,7 +1957,7 @@ impl App {
                             let mut word_start = pos.column;
                             while word_start > 0 && word_start - 1 < chars.len() {
                                 let ch = chars[word_start - 1];
-                                if ch.is_alphanumeric() || ch == '_' {
+                                if ch.is_alphanumeric() {
                                     word_start -= 1;
                                 } else {
                                     break;
