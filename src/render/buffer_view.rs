@@ -18,10 +18,11 @@ impl BufferView {
         highlight_spans: Option<&[HighlightSpan]>,
         theme: &Theme,
         diagnostics: Option<&[Diagnostic]>,
+        show_diagnostics: bool,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
-            Self::calculate_line_number_width(buffer) + 1 // +1 for space
+            Self::calculate_line_number_width(buffer) + 2 // +1 for diagnostic marker space, +1 for trailing space
         } else {
             0
         };
@@ -51,11 +52,15 @@ impl BufferView {
             }
 
             // Check if this line has diagnostics
-            let line_diagnostic = diagnostics.and_then(|diags| {
-                diags.iter().find(|d| {
-                    buffer_line >= d.range.0.line && buffer_line <= d.range.1.line
+            let line_diagnostic = if show_diagnostics {
+                diagnostics.and_then(|diags| {
+                    diags.iter().find(|d| {
+                        buffer_line >= d.range.0.line && buffer_line <= d.range.1.line
+                    })
                 })
-            });
+            } else {
+                None
+            };
 
             // Render line number with diagnostic indicator
             if show_line_numbers {
@@ -76,8 +81,10 @@ impl BufferView {
                     terminal.print(" ")?;
                     terminal.reset_color()?;
                 } else {
+                    // No diagnostic - print space for marker, then line number
+                    terminal.print(" ")?; // Space where marker would be
                     terminal.set_fg(Color::DarkGrey)?;
-                    let line_num = format!("{:>width$} ", buffer_line + 1, width = (line_number_width - 1) as usize);
+                    let line_num = format!("{:>width$} ", buffer_line + 1, width = (line_number_width - 2) as usize);
                     terminal.print(&line_num)?;
                     terminal.reset_color()?;
                 }
@@ -104,7 +111,7 @@ impl BufferView {
         buffer: &TextBuffer,
     ) -> Result<()> {
         let line_number_width = if show_line_numbers {
-            Self::calculate_line_number_width(buffer) + 1
+            Self::calculate_line_number_width(buffer) + 2 // +1 for diagnostic marker space, +1 for trailing space
         } else {
             0
         };

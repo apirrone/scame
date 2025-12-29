@@ -68,6 +68,8 @@ pub enum CommandAction {
     FormatDocument,
     OrganizeImports,
     ToggleSyntaxHighlighting,
+    ToggleSmartIndentation,
+    ToggleDiagnostics,
 }
 
 pub struct App {
@@ -81,6 +83,8 @@ pub struct App {
     message: Option<String>,
     show_line_numbers: bool,
     enable_syntax_highlighting: bool,
+    smart_indentation: bool,
+    show_diagnostics: bool,
     clipboard: String,
     // Emacs-style key chord state
     waiting_for_second_key: bool,
@@ -168,6 +172,8 @@ impl App {
             message: None,
             show_line_numbers: true,
             enable_syntax_highlighting: true,
+            smart_indentation: true,
+            show_diagnostics: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -249,6 +255,8 @@ impl App {
                 message: None,
                 show_line_numbers: true,
                 enable_syntax_highlighting: true,
+                smart_indentation: true,
+                show_diagnostics: true,
                 clipboard: String::new(),
                 waiting_for_second_key: false,
                 file_picker_pattern: String::new(),
@@ -304,6 +312,8 @@ impl App {
             message: None,
             show_line_numbers: true,
             enable_syntax_highlighting: true,
+            smart_indentation: true,
+            show_diagnostics: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -420,6 +430,18 @@ impl App {
                 description: "Enable/disable syntax highlighting for better performance".to_string(),
                 keybinding: None,
                 action: CommandAction::ToggleSyntaxHighlighting,
+            },
+            Command {
+                name: "Toggle Smart Indentation".to_string(),
+                description: "Enable/disable smart Python indentation".to_string(),
+                keybinding: Some("Ctrl+X I".to_string()),
+                action: CommandAction::ToggleSmartIndentation,
+            },
+            Command {
+                name: "Toggle Diagnostics".to_string(),
+                description: "Enable/disable diagnostic dots/markers".to_string(),
+                keybinding: Some("Ctrl+X D".to_string()),
+                action: CommandAction::ToggleDiagnostics,
             },
         ]
     }
@@ -637,6 +659,7 @@ impl App {
                 highlight_spans.as_deref(),
                 self.highlighter.theme(),
                 buffer_diagnostics,
+                self.show_diagnostics,
             )?;
             StatusBar::render(
                 terminal,
@@ -1537,6 +1560,14 @@ impl App {
                 self.enable_syntax_highlighting = !self.enable_syntax_highlighting;
                 let status = if self.enable_syntax_highlighting { "enabled" } else { "disabled" };
                 self.message = Some(format!("Syntax highlighting {}", status));
+            }
+            CommandAction::ToggleSmartIndentation => {
+                self.smart_indentation = !self.smart_indentation;
+                self.message = Some(format!("Smart indentation: {}", if self.smart_indentation { "ON" } else { "OFF" }));
+            }
+            CommandAction::ToggleDiagnostics => {
+                self.show_diagnostics = !self.show_diagnostics;
+                self.message = Some(format!("Diagnostic dots: {}", if self.show_diagnostics { "ON" } else { "OFF" }));
             }
         }
         Ok(ControlFlow::Continue)
@@ -2631,6 +2662,16 @@ impl App {
                     self.message = Some("Not in split mode".to_string());
                 }
                 return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('i') | KeyCode::Char('I')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X I - Toggle smart indentation
+                self.smart_indentation = !self.smart_indentation;
+                self.message = Some(format!("Smart indentation: {}", if self.smart_indentation { "ON" } else { "OFF" }));
+                return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X D - Toggle diagnostic dots
+                self.show_diagnostics = !self.show_diagnostics;
+                self.message = Some(format!("Diagnostic dots: {}", if self.show_diagnostics { "ON" } else { "OFF" }));
+                return Ok(ControlFlow::Continue);
             }
             // If not a recognized chord, fall through to handle the key normally
         }
@@ -3413,7 +3454,7 @@ impl App {
                 }
             }
 
-            // Enter
+            // Enter - Smart indentation
             (KeyCode::Enter, _) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
@@ -3431,13 +3472,55 @@ impl App {
                 }
 
                 let pos = editor_state.cursor.position();
-                text_buffer.insert_char(pos, '\n')?;
-                undo_manager.record(Change::Insert {
-                    pos,
-                    text: "\n".to_string(),
-                });
-                editor_state.cursor.line += 1;
-                editor_state.cursor.move_horizontal(0);
+
+                // Smart indentation (if enabled)
+                if self.smart_indentation {
+                    // Get current line to calculate indentation
+                    let current_line = text_buffer.get_line(pos.line).unwrap_or_default();
+
+                    // Calculate base indentation (leading spaces/tabs)
+                    let base_indent = current_line.chars()
+                        .take_while(|c| *c == ' ' || *c == '\t')
+                        .collect::<String>();
+
+                    // Check the part of the line before cursor to see if it ends with ':'
+                    let line_chars: Vec<char> = current_line.chars().collect();
+                    let line_before_cursor = if pos.column <= line_chars.len() {
+                        line_chars.iter().take(pos.column).collect::<String>()
+                    } else {
+                        current_line.clone()
+                    };
+                    let line_before_cursor_trimmed = line_before_cursor.trim_end();
+                    let needs_extra_indent = line_before_cursor_trimmed.ends_with(':');
+
+                    // Build the newline + indentation string
+                    let mut indent_str = String::from("\n");
+                    indent_str.push_str(&base_indent);
+                    if needs_extra_indent {
+                        indent_str.push_str("    "); // Add 4 spaces for Python
+                    }
+
+                    // Insert newline with indentation
+                    text_buffer.insert(pos, &indent_str)?;
+                    undo_manager.record(Change::Insert {
+                        pos,
+                        text: indent_str.clone(),
+                    });
+
+                    // Move cursor to end of inserted text
+                    let indent_len = base_indent.chars().count() + if needs_extra_indent { 4 } else { 0 };
+                    editor_state.cursor.line += 1;
+                    editor_state.cursor.move_horizontal(indent_len);
+                } else {
+                    // Simple newline without smart indentation
+                    text_buffer.insert(pos, "\n")?;
+                    undo_manager.record(Change::Insert {
+                        pos,
+                        text: String::from("\n"),
+                    });
+                    editor_state.cursor.line += 1;
+                    editor_state.cursor.move_horizontal(0);
+                }
                 editor_state.ensure_cursor_visible();
             }
 
