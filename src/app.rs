@@ -26,6 +26,7 @@ pub enum AppMode {
     CommandPanel,       // Command palette (Ctrl+Shift+P)
     ProjectSearch,      // Project-wide search (Ctrl+X Ctrl+F)
     ConfirmExit,
+    ConfirmCloseTab,    // Confirming close of modified buffer
     Search,
     JumpToLine,
     ReplacePrompt,      // Prompting for search pattern
@@ -122,6 +123,8 @@ pub struct App {
     project_search_pattern: String,
     project_search_results: Vec<ProjectSearchResult>,
     project_search_selected: usize,
+    // Pending close buffer (for ConfirmCloseTab mode)
+    pending_close_buffer_id: Option<crate::workspace::BufferId>,
 }
 
 impl App {
@@ -137,7 +140,9 @@ impl App {
     /// Create a new app instance
     pub fn new() -> Result<Self> {
         let (width, height) = crossterm::terminal::size()?;
-        let mut workspace = Workspace::new(width, height.saturating_sub(1));
+        // Tab bar (1) + Path bar (1) + Status bar (1) = 3 lines to subtract
+        let content_height = height.saturating_sub(3);
+        let mut workspace = Workspace::new(width, content_height);
 
         // Create an empty buffer
         workspace.new_buffer();
@@ -189,13 +194,16 @@ impl App {
             project_search_pattern: String::new(),
             project_search_results: Vec::new(),
             project_search_selected: 0,
+            pending_close_buffer_id: None,
         })
     }
 
     /// Create app from a file or directory
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let (width, height) = crossterm::terminal::size()?;
-        let mut workspace = Workspace::new(width, height.saturating_sub(1));
+        // Tab bar (1) + Path bar (1) + Status bar (1) = 3 lines to subtract
+        let content_height = height.saturating_sub(3);
+        let mut workspace = Workspace::new(width, content_height);
 
         // Determine if it's a file or directory
         if path.is_file() {
@@ -271,6 +279,7 @@ impl App {
                 project_search_pattern: String::new(),
                 project_search_results: Vec::new(),
                 project_search_selected: 0,
+                pending_close_buffer_id: None,
             });
         }
 
@@ -321,6 +330,7 @@ impl App {
             project_search_pattern: String::new(),
             project_search_results: Vec::new(),
             project_search_selected: 0,
+            pending_close_buffer_id: None,
         })
     }
 
@@ -336,7 +346,7 @@ impl App {
             Command {
                 name: "Search and Replace".to_string(),
                 description: "Search and replace text in the current buffer".to_string(),
-                keybinding: Some("Ctrl+H".to_string()),
+                keybinding: Some("Ctrl+X Ctrl+H".to_string()),
                 action: CommandAction::SearchAndReplace,
             },
             Command {
@@ -534,14 +544,18 @@ impl App {
 
                     let editor_state = buffer.editor_state();
                     let screen_line = editor_state.cursor.line.saturating_sub(editor_state.viewport.top_line);
-                    let line_num_width = if self.show_line_numbers {
-                        let max_line = buffer.text_buffer().len_lines();
-                        (if max_line == 0 { 1u16 } else { (max_line as f64).log10().floor() as u16 + 1 }) + 1
-                    } else {
-                        0
-                    };
-                    let screen_col = editor_state.cursor.column as u16 + line_num_width;
-                    terminal.move_cursor(pane_rect.x + screen_col, pane_rect.y + screen_line as u16)?;
+
+                    // Only position cursor if it's within visible area
+                    if screen_line < pane_rect.height as usize {
+                        let line_num_width = if self.show_line_numbers {
+                            let max_line = buffer.text_buffer().len_lines();
+                            (if max_line == 0 { 1u16 } else { (max_line as f64).log10().floor() as u16 + 1 }) + 1
+                        } else {
+                            0
+                        };
+                        let screen_col = editor_state.cursor.column as u16 + line_num_width;
+                        terminal.move_cursor(pane_rect.x + screen_col, pane_rect.y + screen_line as u16)?;
+                    }
                 }
             }
         } else {
@@ -962,7 +976,9 @@ impl App {
 
     /// Handle terminal resize
     pub fn handle_resize(&mut self, width: u16, height: u16) {
-        self.workspace.resize(width, height.saturating_sub(1));
+        // Tab bar (1) + Path bar (1) + Status bar (1) = 3 lines to subtract
+        let content_height = height.saturating_sub(3);
+        self.workspace.resize(width, content_height);
 
         // Recalculate split position if in split mode
         if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
@@ -992,6 +1008,7 @@ impl App {
             AppMode::CommandPanel => self.handle_command_panel_mode(key),
             AppMode::ProjectSearch => self.handle_project_search_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
+            AppMode::ConfirmCloseTab => self.handle_confirm_close_tab_mode(key),
             AppMode::Search => self.handle_search_mode(key),
             AppMode::JumpToLine => self.handle_jump_to_line_mode(key),
             AppMode::ReplacePrompt => self.handle_replace_prompt_mode(key),
@@ -1055,7 +1072,7 @@ impl App {
                 self.file_picker_pattern.push(c);
                 self.update_file_picker_results();
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.file_picker_pattern.pop();
                 self.update_file_picker_results();
             }
@@ -1121,7 +1138,7 @@ impl App {
                 self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.command_panel_pattern.pop();
                 self.command_panel_results = Self::filter_commands(&self.command_panel_pattern);
                 self.command_panel_selected = 0;
@@ -1193,7 +1210,7 @@ impl App {
                 self.project_search_pattern.push(c);
                 self.update_project_search_results();
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.project_search_pattern.pop();
                 self.update_project_search_results();
             }
@@ -1557,6 +1574,93 @@ impl App {
         Ok(ControlFlow::Continue)
     }
 
+    /// Handle key in confirm close tab mode
+    fn handle_confirm_close_tab_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Save buffer then close
+                if let Some(buffer_id) = self.pending_close_buffer_id {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        if let Some(path) = buffer.file_path() {
+                            self.backup_manager.create_backup(path)?;
+                            buffer.text_buffer_mut().save()?;
+                            self.message = Some("Saved".to_string());
+                            // Notify LSP about save
+                            self.notify_lsp_did_save();
+                        } else {
+                            self.message = Some("No file path set".to_string());
+                            self.mode = AppMode::Normal;
+                            self.pending_close_buffer_id = None;
+                            return Ok(ControlFlow::Continue);
+                        }
+                    }
+
+                    // Now close the buffer
+                    if let Err(e) = self.workspace.close_buffer(buffer_id) {
+                        self.message = Some(format!("Error closing buffer: {}", e));
+                    } else {
+                        // If there are remaining buffers, switch to another one
+                        let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                        if let Some(&next_id) = buffer_ids.first() {
+                            let pane = self.layout.active_pane();
+                            self.layout.set_buffer(pane, next_id);
+                            self.message = Some("Buffer saved and closed".to_string());
+                        } else {
+                            // No more buffers, exit
+                            self.message = Some("All buffers closed".to_string());
+                            self.mode = AppMode::Normal;
+                            self.pending_close_buffer_id = None;
+                            return Ok(ControlFlow::Exit);
+                        }
+                    }
+                }
+                self.mode = AppMode::Normal;
+                self.pending_close_buffer_id = None;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // Close without saving (force close)
+                if let Some(buffer_id) = self.pending_close_buffer_id {
+                    self.workspace.force_close_buffer(buffer_id);
+
+                    // If there are remaining buffers, switch to another one
+                    let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                    if let Some(&next_id) = buffer_ids.first() {
+                        let pane = self.layout.active_pane();
+                        self.layout.set_buffer(pane, next_id);
+                        self.message = Some("Buffer closed without saving".to_string());
+                    } else {
+                        // No more buffers, exit
+                        self.message = Some("All buffers closed".to_string());
+                        self.mode = AppMode::Normal;
+                        self.pending_close_buffer_id = None;
+                        return Ok(ControlFlow::Exit);
+                    }
+                }
+                self.mode = AppMode::Normal;
+                self.pending_close_buffer_id = None;
+            }
+            KeyCode::Esc => {
+                // Cancel and return to normal mode
+                self.mode = AppMode::Normal;
+                self.message = Some("Close cancelled".to_string());
+                self.pending_close_buffer_id = None;
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel and return to normal mode (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = Some("Close cancelled".to_string());
+                self.pending_close_buffer_id = None;
+            }
+            _ => {
+                // Any other key cancels
+                self.mode = AppMode::Normal;
+                self.message = Some("Close cancelled".to_string());
+                self.pending_close_buffer_id = None;
+            }
+        }
+        Ok(ControlFlow::Continue)
+    }
+
     /// Handle key in jump to line mode
     fn handle_jump_to_line_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         match key.code {
@@ -1605,7 +1709,7 @@ impl App {
                 self.jump_to_line_input.push(c);
                 self.message = Some(format!("Go to line: {}", self.jump_to_line_input));
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.jump_to_line_input.pop();
                 if self.jump_to_line_input.is_empty() {
                     self.message = Some("Go to line:".to_string());
@@ -1651,7 +1755,7 @@ impl App {
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("Replace{}: {}", regex_indicator, self.replace_pattern));
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.replace_pattern.pop();
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("Replace{}: {}", regex_indicator, self.replace_pattern));
@@ -1702,7 +1806,7 @@ impl App {
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("Replace{} \"{}\" with: {}", regex_indicator, self.replace_pattern, self.replace_with));
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.replace_with.pop();
                 let regex_indicator = if self.search_use_regex { " [REGEX]" } else { "" };
                 self.message = Some(format!("Replace{} \"{}\" with: {}", regex_indicator, self.replace_pattern, self.replace_with));
@@ -2004,7 +2108,7 @@ impl App {
                     let _ = self.perform_search(); // Ignore errors for incremental search
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.search_pattern.pop();
                 // Update message to show current pattern
                 let search_type = if self.search_is_reverse { "Reverse search" } else { "Search" };
@@ -2243,7 +2347,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Tab => {
                 // Insert selected completion
                 if let Some(item) = self.completion_items.get(self.completion_selected) {
                     if let Some(buffer) = self.workspace.active_buffer_mut() {
@@ -2465,6 +2569,16 @@ impl App {
                     self.message = Some("No file path set".to_string());
                 }
                 return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('h')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X Ctrl+H - Replace (query-replace)
+                self.mode = AppMode::ReplacePrompt;
+                self.replace_pattern.clear();
+                self.replace_with.clear();
+                self.replace_count = 0;
+                self.search_start_pos = Some(buffer.editor_state().cursor.position());
+                self.search_use_regex = true;  // Default to regex mode
+                self.message = Some("Replace [REGEX]:".to_string());
+                return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+C - Exit
                 if self.workspace.has_modified_buffers() {
@@ -2538,9 +2652,12 @@ impl App {
                     // Check if buffer is modified
                     if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
                         if buffer.text_buffer().is_modified() {
-                            self.message = Some("Buffer has unsaved changes (save first)".to_string());
+                            // Enter confirmation mode
+                            self.mode = AppMode::ConfirmCloseTab;
+                            self.pending_close_buffer_id = Some(buffer_id);
+                            self.message = Some("Save buffer before closing? (y/n)".to_string());
                         } else {
-                            // Close the buffer
+                            // Close the buffer directly
                             if let Err(e) = self.workspace.close_buffer(buffer_id) {
                                 self.message = Some(format!("Error closing buffer: {}", e));
                             } else {
@@ -2714,16 +2831,72 @@ impl App {
                 self.message = Some("Go to line:".to_string());
             }
 
-            // Ctrl+H - Replace (query-replace)
-            (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
-                self.mode = AppMode::ReplacePrompt;
-                self.replace_pattern.clear();
-                self.replace_with.clear();
-                self.replace_count = 0;
-                self.search_start_pos = Some(buffer.editor_state().cursor.position());
-                self.search_use_regex = true;  // Default to regex mode
-                self.message = Some("Replace [REGEX]:".to_string());
+            // Ctrl+Backspace - Delete word before cursor
+            // Also handle Ctrl+H since many terminals send this for Ctrl+Backspace
+            (KeyCode::Backspace, KeyModifiers::CONTROL) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                let pos = editor_state.cursor.position();
+
+                if pos.column > 0 {
+                    if let Some(line) = text_buffer.get_line(pos.line) {
+                        let chars: Vec<char> = line.chars().collect();
+                        let mut word_start = pos.column;
+
+                        // Skip trailing whitespace
+                        while word_start > 0 && word_start <= chars.len() {
+                            let idx = word_start - 1;
+                            if idx < chars.len() && chars[idx].is_whitespace() {
+                                word_start -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Check what character we're at now
+                        if word_start > 0 {
+                            let idx = word_start - 1;
+                            if idx < chars.len() {
+                                let ch = chars[idx];
+
+                                if ch.is_alphanumeric() || ch == '_' {
+                                    // Delete the whole word (alphanumeric/underscore)
+                                    while word_start > 0 {
+                                        let idx = word_start - 1;
+                                        if idx < chars.len() {
+                                            let ch = chars[idx];
+                                            if ch.is_alphanumeric() || ch == '_' {
+                                                word_start -= 1;
+                                            } else {
+                                                break;
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    // It's punctuation - delete just one character
+                                    word_start -= 1;
+                                }
+                            }
+                        }
+
+                        // Delete from word_start to current cursor position
+                        if word_start < pos.column {
+                            let delete_start = Position::new(pos.line, word_start);
+                            let delete_end = pos;
+                            if let Ok(deleted) = text_buffer.delete_range(delete_start, delete_end) {
+                                undo_manager.record(Change::Delete {
+                                    pos: delete_start,
+                                    text: deleted,
+                                });
+                                editor_state.cursor.set_position(delete_start);
+                                editor_state.ensure_cursor_visible();
+                            }
+                        }
+                    }
+                }
             }
+
 
             // Ctrl+J - Center view on cursor (Emacs style)
             (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
@@ -3030,10 +3203,22 @@ impl App {
             // Alt+F12 - Jump back to previous location
             (KeyCode::F(12), KeyModifiers::ALT) => {
                 if let Some(location) = self.navigation_history.pop() {
-                    // Open the file and jump to the position
-                    match self.workspace.open_file(location.path.clone()) {
-                        Ok(_) => {
-                            if let Some(buffer) = self.workspace.active_buffer_mut() {
+                    // Check if we're jumping within the same file
+                    let current_buffer_id = self.layout.active_buffer();
+                    let is_same_file = if let Some(buffer_id) = current_buffer_id {
+                        if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                            buffer.file_path() == Some(&location.path)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_same_file {
+                        // Just move cursor in current buffer
+                        if let Some(buffer_id) = current_buffer_id {
+                            if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
                                 let editor_state = buffer.editor_state_mut();
                                 editor_state.cursor.set_position(crate::buffer::Position {
                                     line: location.position.line,
@@ -3041,15 +3226,39 @@ impl App {
                                 });
                                 editor_state.ensure_cursor_visible();
                                 self.message = Some(format!(
-                                    "Jumped back to {} ({}:{})",
-                                    location.path.display(),
+                                    "Jumped back to line {}:{}",
                                     location.position.line + 1,
                                     location.position.column + 1
                                 ));
                             }
                         }
-                        Err(e) => {
-                            self.message = Some(format!("Error opening file: {}", e));
+                    } else {
+                        // Open the file and jump to the position
+                        match self.workspace.open_file(location.path.clone()) {
+                            Ok(buffer_id) => {
+                                // Set the buffer in the active pane
+                                let pane = self.layout.active_pane();
+                                self.layout.set_buffer(pane, buffer_id);
+
+                                // Now get the buffer and set cursor position
+                                if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                    let editor_state = buffer.editor_state_mut();
+                                    editor_state.cursor.set_position(crate::buffer::Position {
+                                        line: location.position.line,
+                                        column: location.position.column,
+                                    });
+                                    editor_state.ensure_cursor_visible();
+                                    self.message = Some(format!(
+                                        "Jumped back to {} ({}:{})",
+                                        location.path.display(),
+                                        location.position.line + 1,
+                                        location.position.column + 1
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                self.message = Some(format!("Error opening file: {}", e));
+                            }
                         }
                     }
                 } else {
@@ -3097,7 +3306,7 @@ impl App {
             }
 
             // Backspace
-            (KeyCode::Backspace, _) => {
+            (KeyCode::Backspace, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
                 // If there's a selection, delete it
@@ -3138,8 +3347,47 @@ impl App {
                 }
             }
 
+            // Ctrl+Delete - Delete word after cursor
+            (KeyCode::Delete, KeyModifiers::CONTROL) => {
+                let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                let pos = editor_state.cursor.position();
+
+                // Get the current line
+                if let Some(line) = text_buffer.get_line(pos.line) {
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut word_end = pos.column;
+
+                    // Skip leading whitespace
+                    while word_end < chars.len() && chars[word_end].is_whitespace() {
+                        word_end += 1;
+                    }
+
+                    // Delete the word (alphanumeric/underscore)
+                    while word_end < chars.len() {
+                        let ch = chars[word_end];
+                        if ch.is_alphanumeric() || ch == '_' {
+                            word_end += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Delete from cursor to word_end
+                    if word_end > pos.column {
+                        let delete_start = pos;
+                        let delete_end = Position::new(pos.line, word_end);
+                        if let Ok(deleted) = text_buffer.delete_range(delete_start, delete_end) {
+                            undo_manager.record(Change::Delete {
+                                pos: delete_start,
+                                text: deleted,
+                            });
+                        }
+                    }
+                }
+            }
+
             // Delete
-            (KeyCode::Delete, _) => {
+            (KeyCode::Delete, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
                 // If there's a selection, delete it
@@ -3347,21 +3595,58 @@ impl App {
                 self.diagnostics_store.update(buffer_id, diagnostics);
             }
             LspResponse::GotoDefinition { location } => {
-                // Open file and jump to position
-                match self.workspace.open_file(location.path.clone()) {
-                    Ok(_) => {
-                        if let Some(buffer) = self.workspace.active_buffer_mut() {
+                // Check if we're jumping within the same file
+                let current_buffer_id = self.layout.active_buffer();
+                let is_same_file = if let Some(buffer_id) = current_buffer_id {
+                    if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                        buffer.file_path() == Some(&location.path)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if is_same_file {
+                    // Just move cursor in current buffer
+                    if let Some(buffer_id) = current_buffer_id {
+                        if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
                             let editor_state = buffer.editor_state_mut();
                             editor_state.cursor.set_position(crate::buffer::Position {
                                 line: location.position.line,
                                 column: location.position.column,
                             });
                             editor_state.ensure_cursor_visible();
-                            self.message = Some(format!("Jumped to {}", location.path.display()));
+                            self.message = Some(format!("Jumped to line {}:{}",
+                                location.position.line + 1,
+                                location.position.column + 1));
                         }
                     }
-                    Err(e) => {
-                        self.message = Some(format!("Error: {}", e));
+                } else {
+                    // Open file and jump to position
+                    match self.workspace.open_file(location.path.clone()) {
+                        Ok(buffer_id) => {
+                            // Set the buffer in the active pane
+                            let pane = self.layout.active_pane();
+                            self.layout.set_buffer(pane, buffer_id);
+
+                            // Now get the buffer and set cursor position
+                            if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                let editor_state = buffer.editor_state_mut();
+                                editor_state.cursor.set_position(crate::buffer::Position {
+                                    line: location.position.line,
+                                    column: location.position.column,
+                                });
+                                editor_state.ensure_cursor_visible();
+                                self.message = Some(format!("Jumped to {}:{}:{}",
+                                    location.path.display(),
+                                    location.position.line + 1,
+                                    location.position.column + 1));
+                            }
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("Error: {}", e));
+                        }
                     }
                 }
             }
@@ -3429,7 +3714,7 @@ impl App {
                     self.completion_scroll_offset = 0;
                     self.mode = AppMode::Completion;
                     self.message = Some(format!(
-                        "{} completions (↑↓ to navigate, Enter to select, Esc to cancel)",
+                        "{} completions (↑↓ to navigate, Enter/Tab to select, Esc to cancel)",
                         self.completion_items.len()
                     ));
                 }

@@ -250,6 +250,8 @@ impl BufferView {
         state: &EditorState,
         line_number_width: u16,
     ) -> Result<()> {
+        let (_, term_height) = terminal.size();
+
         // Calculate screen position of cursor
         let screen_line = state.cursor.line.saturating_sub(state.viewport.top_line);
         let screen_col = state.cursor.column as u16 + line_number_width;
@@ -257,11 +259,15 @@ impl BufferView {
         // Account for tab bar and path bar at top (2 lines offset)
         let tab_bar_height = 1;
         let path_bar_height = 1;
+        let status_bar_height = 1;
         let top_bars_height = tab_bar_height + path_bar_height;
+        let content_height = term_height.saturating_sub(top_bars_height + status_bar_height);
         let screen_y = screen_line as u16 + top_bars_height;
 
-        // Just position the cursor, don't show it yet (done at app level)
-        terminal.move_cursor(screen_col, screen_y)?;
+        // Only position cursor if it's within the content area (not in status bar)
+        if screen_line < content_height as usize {
+            terminal.move_cursor(screen_col, screen_y)?;
+        }
 
         Ok(())
     }
