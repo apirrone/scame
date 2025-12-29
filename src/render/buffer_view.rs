@@ -26,17 +26,19 @@ impl BufferView {
             0
         };
 
-        // Tab bar takes 1 line at top, status bar takes 1 line at bottom
+        // Tab bar and path bar take 2 lines at top, status bar takes 1 line at bottom
         let tab_bar_height = 1;
+        let path_bar_height = 1;
         let status_bar_height = 1;
-        let content_height = term_height.saturating_sub(tab_bar_height + status_bar_height);
+        let top_bars_height = tab_bar_height + path_bar_height;
+        let content_height = term_height.saturating_sub(top_bars_height + status_bar_height);
 
         // Render each visible line
         for screen_row in 0..content_height {
             let buffer_line = state.viewport.top_line + screen_row as usize;
 
-            // Offset by tab bar height
-            terminal.move_cursor(0, screen_row + tab_bar_height)?;
+            // Offset by tab bar and path bar height
+            terminal.move_cursor(0, screen_row + top_bars_height)?;
             terminal.clear_line()?;
 
             if buffer_line >= buffer.len_lines() {
@@ -252,9 +254,11 @@ impl BufferView {
         let screen_line = state.cursor.line.saturating_sub(state.viewport.top_line);
         let screen_col = state.cursor.column as u16 + line_number_width;
 
-        // Account for tab bar at top (1 line offset)
+        // Account for tab bar and path bar at top (2 lines offset)
         let tab_bar_height = 1;
-        let screen_y = screen_line as u16 + tab_bar_height;
+        let path_bar_height = 1;
+        let top_bars_height = tab_bar_height + path_bar_height;
+        let screen_y = screen_line as u16 + top_bars_height;
 
         // Just position the cursor, don't show it yet (done at app level)
         terminal.move_cursor(screen_col, screen_y)?;

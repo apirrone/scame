@@ -473,8 +473,11 @@ impl App {
         let active_buffer_id = self.layout.active_buffer().unwrap_or(crate::workspace::BufferId(0));
         crate::render::TabBar::render(terminal, &buffer_list, active_buffer_id)?;
 
-        // Check if we're in split mode
+        // Render path bar (line 1)
         let (term_width, term_height) = terminal.size();
+        self.render_path_bar(terminal, term_width)?;
+
+        // Check if we're in split mode
 
         if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
             // Render split panes
@@ -689,7 +692,7 @@ impl App {
                 };
 
                 let screen_x = (gutter_width + cursor.column).saturating_sub(viewport.left_column);
-                let screen_y = cursor.line.saturating_sub(viewport.top_line) + 1; // +1 for tab bar offset
+                let screen_y = cursor.line.saturating_sub(viewport.top_line) + 2; // +2 for tab bar and path bar offset
 
                 crate::lsp::CompletionPopup::render(
                     terminal,
@@ -709,6 +712,57 @@ impl App {
         terminal.show_cursor()?;
         terminal.flush()?;
 
+        Ok(())
+    }
+
+    /// Render the path bar showing the current file path relative to project root
+    fn render_path_bar(&self, terminal: &Terminal, term_width: u16) -> Result<()> {
+        terminal.move_cursor(0, 1)?;
+        terminal.set_bg(crossterm::style::Color::DarkGrey)?;
+        terminal.set_fg(crossterm::style::Color::White)?;
+
+        // Get the active buffer and its path
+        let path_text = if let Some(buffer_id) = self.layout.active_buffer() {
+            if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                if let Some(file_path) = buffer.file_path() {
+                    // Try to get relative path from project root
+                    if let Some(file_tree) = &self.file_tree {
+                        let project_root = file_tree.root();
+                        if let Ok(relative) = file_path.strip_prefix(project_root) {
+                            format!(" {}", relative.display())
+                        } else {
+                            format!(" {}", file_path.display())
+                        }
+                    } else {
+                        format!(" {}", file_path.display())
+                    }
+                } else {
+                    " [No file]".to_string()
+                }
+            } else {
+                " [No buffer]".to_string()
+            }
+        } else {
+            " [No buffer]".to_string()
+        };
+
+        // Print the path, truncate if too long
+        let max_width = term_width as usize;
+        let display_text = if path_text.len() > max_width {
+            format!("...{}", &path_text[path_text.len() - max_width + 3..])
+        } else {
+            path_text
+        };
+
+        terminal.print(&display_text)?;
+
+        // Fill remaining space
+        let remaining = max_width.saturating_sub(display_text.len());
+        if remaining > 0 {
+            terminal.print(&" ".repeat(remaining))?;
+        }
+
+        terminal.reset_color()?;
         Ok(())
     }
 

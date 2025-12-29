@@ -95,14 +95,16 @@ impl LayoutManager {
 
     pub fn pane_dimensions(&self, term_width: u16, term_height: u16) -> PaneDimensions {
         let tab_bar_height = 1;
+        let path_bar_height = 1;
         let status_bar_height = 1;
-        let content_height = term_height.saturating_sub(tab_bar_height + status_bar_height);
+        let top_bars_height = tab_bar_height + path_bar_height;
+        let content_height = term_height.saturating_sub(top_bars_height + status_bar_height);
 
         match self.mode {
             LayoutMode::Single => PaneDimensions {
                 left: PaneRect {
                     x: 0,
-                    y: tab_bar_height,
+                    y: top_bars_height,
                     width: term_width,
                     height: content_height,
                 },
@@ -114,13 +116,13 @@ impl LayoutManager {
                 PaneDimensions {
                     left: PaneRect {
                         x: 0,
-                        y: tab_bar_height,
+                        y: top_bars_height,
                         width: left_width,
                         height: content_height,
                     },
                     right: Some(PaneRect {
                         x: left_width,
-                        y: tab_bar_height,
+                        y: top_bars_height,
                         width: right_width,
                         height: content_height,
                     }),
