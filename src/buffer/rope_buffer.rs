@@ -239,9 +239,34 @@ impl TextBuffer {
         Position { line, column }
     }
 
-    /// Check if buffer is modified
+    /// Check if buffer is modified (simple flag, doesn't compare with file)
     pub fn is_modified(&self) -> bool {
         self.modified
+    }
+
+    /// Check if buffer content actually differs from file on disk
+    pub fn is_actually_modified(&self) -> bool {
+        // If there's no file path, we can't compare
+        let Some(path) = &self.file_path else {
+            return self.modified;
+        };
+
+        // If the file doesn't exist, buffer is modified
+        if !path.exists() {
+            return self.modified;
+        }
+
+        // Read file content and compare with buffer
+        match std::fs::read_to_string(path) {
+            Ok(file_content) => {
+                let buffer_content = self.rope.to_string();
+                file_content != buffer_content
+            }
+            Err(_) => {
+                // If we can't read the file, fall back to the flag
+                self.modified
+            }
+        }
     }
 
     /// Get the file path

@@ -1414,9 +1414,9 @@ impl App {
             CommandAction::CloseBuffer => {
                 // Close current buffer
                 if let Some(buffer_id) = self.layout.active_buffer() {
-                    // Check if buffer is modified
+                    // Check if buffer is actually modified (compares with file on disk)
                     if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
-                        if buffer.text_buffer().is_modified() {
+                        if buffer.is_actually_modified() {
                             self.message = Some("Buffer has unsaved changes (save first)".to_string());
                         } else {
                             // Close the buffer
@@ -2649,9 +2649,9 @@ impl App {
             // Ctrl+W - Close current buffer/tab
             (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
                 if let Some(buffer_id) = self.layout.active_buffer() {
-                    // Check if buffer is modified
+                    // Check if buffer is actually modified (compares with file on disk)
                     if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
-                        if buffer.text_buffer().is_modified() {
+                        if buffer.is_actually_modified() {
                             // Enter confirmation mode
                             self.mode = AppMode::ConfirmCloseTab;
                             self.pending_close_buffer_id = Some(buffer_id);

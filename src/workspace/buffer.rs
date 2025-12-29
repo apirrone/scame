@@ -117,9 +117,14 @@ impl Buffer {
         }
     }
 
-    /// Check if buffer is modified
+    /// Check if buffer is modified (simple flag)
     pub fn is_modified(&self) -> bool {
         self.text_buffer.is_modified()
+    }
+
+    /// Check if buffer content actually differs from file on disk
+    pub fn is_actually_modified(&self) -> bool {
+        self.text_buffer.is_actually_modified()
     }
 
     /// Resize the viewport

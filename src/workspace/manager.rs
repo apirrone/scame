@@ -183,9 +183,9 @@ impl Workspace {
         self.buffers.len()
     }
 
-    /// Check if any buffer is modified
+    /// Check if any buffer is modified (compares with file on disk)
     pub fn has_modified_buffers(&self) -> bool {
-        self.buffers.values().any(|b| b.is_modified())
+        self.buffers.values().any(|b| b.is_actually_modified())
     }
 
     /// Resize all buffers
@@ -196,11 +196,11 @@ impl Workspace {
         }
     }
 
-    /// Get list of modified buffers
+    /// Get list of modified buffers (compares with file on disk)
     pub fn modified_buffers(&self) -> Vec<BufferId> {
         self.buffers
             .iter()
-            .filter(|(_, b)| b.is_modified())
+            .filter(|(_, b)| b.is_actually_modified())
             .map(|(id, _)| *id)
             .collect()
     }
@@ -211,7 +211,7 @@ impl Workspace {
             .iter()
             .map(|(id, buf)| {
                 let name = buf.display_name();
-                let modified = buf.text_buffer().is_modified();
+                let modified = buf.is_actually_modified();
                 (*id, name, modified)
             })
             .collect()
@@ -224,10 +224,10 @@ impl Workspace {
         }
     }
 
-    /// Save all modified buffers
+    /// Save all modified buffers (compares with file on disk)
     pub fn save_all_modified_buffers(&mut self, backup_manager: &BackupManager) -> Result<()> {
         for buffer in self.buffers.values_mut() {
-            if buffer.is_modified() {
+            if buffer.is_actually_modified() {
                 if let Some(path) = buffer.file_path() {
                     backup_manager.create_backup(path)?;
                     buffer.text_buffer_mut().save()?;
