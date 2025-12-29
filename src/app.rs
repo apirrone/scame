@@ -64,6 +64,8 @@ pub enum CommandAction {
     NextBuffer,
     PreviousBuffer,
     CloseBuffer,
+    FormatDocument,
+    OrganizeImports,
 }
 
 pub struct App {
@@ -369,6 +371,18 @@ impl App {
                 description: "Close the current buffer".to_string(),
                 keybinding: Some("Ctrl+W".to_string()),
                 action: CommandAction::CloseBuffer,
+            },
+            Command {
+                name: "Format Document".to_string(),
+                description: "Format Python file with black".to_string(),
+                keybinding: None,
+                action: CommandAction::FormatDocument,
+            },
+            Command {
+                name: "Organize Imports".to_string(),
+                description: "Organize Python imports with isort".to_string(),
+                keybinding: None,
+                action: CommandAction::OrganizeImports,
             },
         ]
     }
@@ -1264,6 +1278,102 @@ impl App {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            CommandAction::FormatDocument => {
+                // Format Python file with black
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    // Get file path first to avoid borrowing issues
+                    let path_opt = self.workspace.get_buffer(buffer_id)
+                        .and_then(|b| b.file_path().cloned());
+
+                    if let Some(path) = path_opt {
+                        // Check if it's a Python file
+                        if path.extension().and_then(|s| s.to_str()) == Some("py") {
+                            // Save file first if modified
+                            if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
+                                if buffer_mut.text_buffer().is_modified() {
+                                    self.backup_manager.create_backup(&path)?;
+                                    buffer_mut.text_buffer_mut().save()?;
+                                }
+                            }
+
+                            // Run black
+                            let output = std::process::Command::new("black")
+                                .arg(&path)
+                                .output();
+
+                            match output {
+                                Ok(result) if result.status.success() => {
+                                    // Reload the file
+                                    if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
+                                        let reloaded = crate::buffer::TextBuffer::from_file(path)?;
+                                        *buffer_mut.text_buffer_mut() = reloaded;
+                                        self.message = Some("Formatted with black".to_string());
+                                    }
+                                }
+                                Ok(result) => {
+                                    let stderr = String::from_utf8_lossy(&result.stderr);
+                                    self.message = Some(format!("black error: {}", stderr));
+                                }
+                                Err(e) => {
+                                    self.message = Some(format!("Failed to run black: {}", e));
+                                }
+                            }
+                        } else {
+                            self.message = Some("Not a Python file".to_string());
+                        }
+                    } else {
+                        self.message = Some("Buffer has no file path".to_string());
+                    }
+                }
+            }
+            CommandAction::OrganizeImports => {
+                // Organize imports with isort
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    // Get file path first to avoid borrowing issues
+                    let path_opt = self.workspace.get_buffer(buffer_id)
+                        .and_then(|b| b.file_path().cloned());
+
+                    if let Some(path) = path_opt {
+                        // Check if it's a Python file
+                        if path.extension().and_then(|s| s.to_str()) == Some("py") {
+                            // Save file first if modified
+                            if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
+                                if buffer_mut.text_buffer().is_modified() {
+                                    self.backup_manager.create_backup(&path)?;
+                                    buffer_mut.text_buffer_mut().save()?;
+                                }
+                            }
+
+                            // Run isort
+                            let output = std::process::Command::new("isort")
+                                .arg(&path)
+                                .output();
+
+                            match output {
+                                Ok(result) if result.status.success() => {
+                                    // Reload the file
+                                    if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
+                                        let reloaded = crate::buffer::TextBuffer::from_file(path)?;
+                                        *buffer_mut.text_buffer_mut() = reloaded;
+                                        self.message = Some("Organized imports with isort".to_string());
+                                    }
+                                }
+                                Ok(result) => {
+                                    let stderr = String::from_utf8_lossy(&result.stderr);
+                                    self.message = Some(format!("isort error: {}", stderr));
+                                }
+                                Err(e) => {
+                                    self.message = Some(format!("Failed to run isort: {}", e));
+                                }
+                            }
+                        } else {
+                            self.message = Some("Not a Python file".to_string());
+                        }
+                    } else {
+                        self.message = Some("Buffer has no file path".to_string());
                     }
                 }
             }
