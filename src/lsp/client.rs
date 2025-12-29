@@ -415,7 +415,7 @@ impl LspClient {
     fn installation_hint(language: &Language) -> &'static str {
         match language {
             Language::Rust => "rustup component add rust-analyzer",
-            Language::Python => "npm install -g pyright (or: pip install python-lsp-server)",
+            Language::Python => "pip install pyright",
         }
     }
 

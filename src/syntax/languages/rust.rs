@@ -10,37 +10,52 @@ pub fn language() -> Language {
 /// Get the Rust highlighting query
 pub fn query() -> Result<Query, tree_sitter::QueryError> {
     let query_source = r#"
+; Comments
+(line_comment) @comment
+(block_comment) @comment
+
+; Strings
+(string_literal) @string
+(char_literal) @string
+(raw_string_literal) @string
+
+; Numbers
+(integer_literal) @number
+(float_literal) @number
+
+; Constants
+(boolean_literal) @constant
+
+; Functions
 (function_item
   name: (identifier) @function)
 
 (call_expression
   function: (identifier) @function)
 
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @function))
+
 (macro_invocation
   macro: (identifier) @function)
 
+; Types
 (struct_item
   name: (type_identifier) @type)
 
 (enum_item
   name: (type_identifier) @type)
 
+(impl_item
+  type: (type_identifier) @type)
+
 (type_identifier) @type
+(primitive_type) @type
 
-(string_literal) @string
-(char_literal) @string
-
-(line_comment) @comment
-(block_comment) @comment
-
-(integer_literal) @number
-(float_literal) @number
-
-(boolean_literal) @constant
-
+; Keywords - only the ones that work
 "fn" @keyword
 "let" @keyword
-"mut" @keyword
 "const" @keyword
 "static" @keyword
 "struct" @keyword
@@ -59,18 +74,13 @@ pub fn query() -> Result<Query, tree_sitter::QueryError> {
 "use" @keyword
 "mod" @keyword
 "pub" @keyword
-"crate" @keyword
-"self" @keyword
-"super" @keyword
 "async" @keyword
 "await" @keyword
-"move" @keyword
-"ref" @keyword
 "where" @keyword
 "unsafe" @keyword
 "extern" @keyword
 "type" @keyword
-"dyn" @keyword
+"as" @keyword
     "#;
 
     Query::new(&language(), query_source)
