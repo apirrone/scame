@@ -75,6 +75,11 @@ impl Workspace {
         self.active_buffer.and_then(|id| self.buffers.get_mut(&id))
     }
 
+    /// Get the active buffer ID
+    pub fn active_buffer_id(&self) -> Option<BufferId> {
+        self.active_buffer
+    }
+
     /// Get a specific buffer
     pub fn get_buffer(&self, id: BufferId) -> Option<&Buffer> {
         self.buffers.get(&id)
@@ -198,6 +203,25 @@ impl Workspace {
             .filter(|(_, b)| b.is_modified())
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// Get list of all buffers with display info (id, name, modified)
+    pub fn buffer_list(&self) -> Vec<(BufferId, String, bool)> {
+        self.buffers
+            .iter()
+            .map(|(id, buf)| {
+                let name = buf.display_name();
+                let modified = buf.text_buffer().is_modified();
+                (*id, name, modified)
+            })
+            .collect()
+    }
+
+    /// Resize a specific buffer
+    pub fn resize_buffer(&mut self, id: BufferId, width: u16, height: u16) {
+        if let Some(buffer) = self.buffers.get_mut(&id) {
+            buffer.resize(width, height);
+        }
     }
 
     /// Save all modified buffers

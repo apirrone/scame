@@ -34,6 +34,7 @@ pub enum AppMode {
 
 pub struct App {
     workspace: Workspace,
+    layout: crate::workspace::LayoutManager,
     backup_manager: BackupManager,
     file_tree: Option<FileTree>,
     file_search: FileSearch,
@@ -53,6 +54,8 @@ pub struct App {
     // Cache highlight spans to avoid re-parsing every frame
     cached_highlights: Option<Vec<HighlightSpan>>,
     cached_text_hash: u64,
+    // Per-buffer highlight cache for split mode
+    buffer_highlight_cache: std::collections::HashMap<crate::workspace::BufferId, (u64, Vec<HighlightSpan>)>,
     // Search state
     search_pattern: String,
     search_start_pos: Option<Position>,
@@ -93,8 +96,15 @@ impl App {
         // Create an empty buffer
         workspace.new_buffer();
 
+        let mut layout = crate::workspace::LayoutManager::new();
+        // Initialize layout with the first buffer
+        if let Some(buffer_id) = workspace.active_buffer_id() {
+            layout.set_buffer(crate::workspace::PaneId::Left, buffer_id);
+        }
+
         Ok(Self {
             workspace,
+            layout,
             backup_manager: BackupManager::new(),
             file_tree: None,
             file_search: FileSearch::new(),
@@ -103,6 +113,7 @@ impl App {
             logged_highlighting: false,
             cached_highlights: None,
             cached_text_hash: 0,
+            buffer_highlight_cache: std::collections::HashMap::new(),
             message: None,
             show_line_numbers: true,
             clipboard: String::new(),
@@ -144,8 +155,15 @@ impl App {
             // Create empty buffer
             workspace.new_buffer();
 
+            // Initialize layout
+            let mut layout = crate::workspace::LayoutManager::new();
+            if let Some(buffer_id) = workspace.active_buffer_id() {
+                layout.set_buffer(crate::workspace::PaneId::Left, buffer_id);
+            }
+
             return Ok(Self {
                 workspace,
+                layout,
                 backup_manager: BackupManager::new(),
                 file_tree: Some(file_tree),
                 file_search: FileSearch::new(),
@@ -161,6 +179,7 @@ impl App {
                 logged_highlighting: false,
                 cached_highlights: None,
                 cached_text_hash: 0,
+                buffer_highlight_cache: std::collections::HashMap::new(),
                 search_pattern: String::new(),
                 search_start_pos: None,
                 search_is_reverse: false,
@@ -179,8 +198,15 @@ impl App {
             });
         }
 
+        // Initialize layout
+        let mut layout = crate::workspace::LayoutManager::new();
+        if let Some(buffer_id) = workspace.active_buffer_id() {
+            layout.set_buffer(crate::workspace::PaneId::Left, buffer_id);
+        }
+
         Ok(Self {
             workspace,
+            layout,
             backup_manager: BackupManager::new(),
             file_tree: None,
             file_search: FileSearch::new(),
@@ -189,6 +215,7 @@ impl App {
             logged_highlighting: false,
             cached_highlights: None,
             cached_text_hash: 0,
+            buffer_highlight_cache: std::collections::HashMap::new(),
             message: None,
             show_line_numbers: true,
             clipboard: String::new(),
@@ -219,7 +246,85 @@ impl App {
         // Hide cursor during rendering to prevent flickering
         terminal.hide_cursor()?;
 
-        if let Some(buffer) = self.workspace.active_buffer() {
+        // Render tab bar at top
+        let buffer_list = self.workspace.buffer_list();
+        let active_buffer_id = self.layout.active_buffer().unwrap_or(crate::workspace::BufferId(0));
+        crate::render::TabBar::render(terminal, &buffer_list, active_buffer_id)?;
+
+        // Check if we're in split mode
+        let (term_width, term_height) = terminal.size();
+
+        if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+            // Render split panes
+            let pane_dims = self.layout.pane_dimensions(term_width, term_height);
+
+            // Compute highlights for left pane
+            let left_highlights = if let Some(left_id) = self.layout.left_buffer() {
+                self.get_cached_highlights(left_id)
+            } else {
+                None
+            };
+
+            // Compute highlights for right pane
+            let right_highlights = if let Some(right_id) = self.layout.right_buffer() {
+                self.get_cached_highlights(right_id)
+            } else {
+                None
+            };
+
+            // Render left pane
+            if let Some(left_id) = self.layout.left_buffer() {
+                if let Some(buffer) = self.workspace.get_buffer(left_id) {
+                    self.render_buffer_in_pane(terminal, buffer, &pane_dims.left, left_id == active_buffer_id, left_highlights.as_deref())?;
+                }
+            }
+
+            // Render right pane
+            if let Some(ref right_rect) = pane_dims.right {
+                if let Some(right_id) = self.layout.right_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer(right_id) {
+                        self.render_buffer_in_pane(terminal, buffer, right_rect, right_id == active_buffer_id, right_highlights.as_deref())?;
+                    }
+                }
+            }
+
+            // Render status bar for split mode
+            if let Some(active_id) = self.layout.active_buffer() {
+                if let Some(buffer) = self.workspace.get_buffer(active_id) {
+                    let buffer_diagnostics = self.diagnostics_store.get(buffer.id().0);
+                    StatusBar::render(
+                        terminal,
+                        buffer.text_buffer(),
+                        buffer.editor_state(),
+                        self.message.as_deref(),
+                        buffer_diagnostics,
+                    )?;
+
+                    // Position cursor in the active pane (simplified for now)
+                    let pane_rect = if self.layout.active_pane() == crate::workspace::PaneId::Left {
+                        &pane_dims.left
+                    } else {
+                        pane_dims.right.as_ref().unwrap_or(&pane_dims.left)
+                    };
+
+                    let editor_state = buffer.editor_state();
+                    let screen_line = editor_state.cursor.line.saturating_sub(editor_state.viewport.top_line);
+                    let line_num_width = if self.show_line_numbers {
+                        let max_line = buffer.text_buffer().len_lines();
+                        (if max_line == 0 { 1u16 } else { (max_line as f64).log10().floor() as u16 + 1 }) + 1
+                    } else {
+                        0
+                    };
+                    let screen_col = editor_state.cursor.column as u16 + line_num_width;
+                    terminal.move_cursor(pane_rect.x + screen_col, pane_rect.y + screen_line as u16)?;
+                }
+            }
+        } else {
+            // Single pane mode - render just the active buffer
+            let buffer_id = self.layout.active_buffer();
+            if let Some(id) = buffer_id {
+                let buffer = self.workspace.get_buffer(id);
+                if let Some(buffer) = buffer {
             // Get syntax highlighting if supported (with caching)
             let highlight_spans = if let Some(path) = buffer.file_path() {
                 if let Some(lang) = SupportedLanguage::from_path(path) {
@@ -304,6 +409,8 @@ impl App {
                 self.show_line_numbers,
                 buffer.text_buffer(),
             )?;
+            }
+            }
         }
 
         // Render file picker overlay if active
@@ -318,7 +425,9 @@ impl App {
 
         // Render completion popup if active
         if self.mode == AppMode::Completion {
-            if let Some(buffer) = self.workspace.active_buffer() {
+            let buffer_id = self.layout.active_buffer();
+            if let Some(id) = buffer_id {
+                if let Some(buffer) = self.workspace.get_buffer(id) {
                 // Calculate screen position of cursor
                 let editor_state = buffer.editor_state();
                 let viewport = &editor_state.viewport;
@@ -334,7 +443,7 @@ impl App {
                 };
 
                 let screen_x = (gutter_width + cursor.column).saturating_sub(viewport.left_column);
-                let screen_y = cursor.line.saturating_sub(viewport.top_line) + 1; // +1 for status bar offset
+                let screen_y = cursor.line.saturating_sub(viewport.top_line) + 1; // +1 for tab bar offset
 
                 crate::lsp::CompletionPopup::render(
                     terminal,
@@ -343,6 +452,7 @@ impl App {
                     self.completion_scroll_offset,
                     (screen_x as u16, screen_y as u16),
                 )?;
+                }
             }
         }
 
@@ -356,9 +466,154 @@ impl App {
         Ok(())
     }
 
+    /// Get cached syntax highlights for a buffer (with caching to avoid recomputing every frame)
+    fn get_cached_highlights(&mut self, buffer_id: crate::workspace::BufferId) -> Option<Vec<crate::syntax::HighlightSpan>> {
+        let buffer = self.workspace.get_buffer(buffer_id)?;
+        let path = buffer.file_path()?;
+        let lang = crate::syntax::SupportedLanguage::from_path(path)?;
+
+        let text = buffer.text_buffer().to_string();
+        let text_hash = Self::simple_hash(&text);
+
+        // Check if we have cached highlights for this buffer
+        if let Some((cached_hash, cached_highlights)) = self.buffer_highlight_cache.get(&buffer_id) {
+            if *cached_hash == text_hash {
+                return Some(cached_highlights.clone());
+            }
+        }
+
+        // Compute new highlights
+        let file_id = path.to_string_lossy().to_string();
+        let query = lang.query().ok()?;
+        let capture_names = lang.capture_names().ok()?;
+
+        self.highlighter.set_language(&lang.language()).ok()?;
+        let highlights = self.highlighter.highlight(&text, &file_id, &query, &capture_names).ok()?;
+
+        // Cache the results
+        self.buffer_highlight_cache.insert(buffer_id, (text_hash, highlights.clone()));
+
+        Some(highlights)
+    }
+
+    /// Render a buffer in a specific pane
+    fn render_buffer_in_pane(
+        &self,
+        terminal: &Terminal,
+        buffer: &crate::workspace::Buffer,
+        pane_rect: &crate::workspace::PaneRect,
+        is_active: bool,
+        highlights: Option<&[crate::syntax::HighlightSpan]>,
+    ) -> Result<()> {
+        let text_buffer = buffer.text_buffer();
+        let editor_state = buffer.editor_state();
+
+        // Render each line in the pane
+        for screen_row in 0..pane_rect.height {
+            let buffer_line = editor_state.viewport.top_line + screen_row as usize;
+            let screen_y = pane_rect.y + screen_row;
+
+            terminal.move_cursor(pane_rect.x, screen_y)?;
+
+            // Clear the line in this pane
+            terminal.print(&" ".repeat(pane_rect.width as usize))?;
+            terminal.move_cursor(pane_rect.x, screen_y)?;
+
+            if buffer_line >= text_buffer.len_lines() {
+                // Empty line beyond buffer
+                if is_active {
+                    terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                } else {
+                    terminal.set_fg(crossterm::style::Color::Grey)?;
+                }
+                terminal.print("~")?;
+                terminal.reset_color()?;
+                continue;
+            }
+
+            // Get the line content
+            if let Some(line) = text_buffer.get_line(buffer_line) {
+                let line_num_width = if self.show_line_numbers {
+                    let max_line = text_buffer.len_lines();
+                    let digits = if max_line == 0 { 1 } else { (max_line as f64).log10().floor() as usize + 1 };
+                    let line_num_str = format!("{:>width$} ", buffer_line + 1, width = digits);
+                    terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                    terminal.print(&line_num_str)?;
+                    terminal.reset_color()?;
+                    digits + 1
+                } else {
+                    0
+                };
+
+                // Render the line with syntax highlighting if available
+                let available_width = (pane_rect.width as usize).saturating_sub(line_num_width);
+                let line_start_byte = text_buffer.line_to_byte(buffer_line);
+
+                if let Some(highlight_spans) = highlights {
+                    // Render with syntax highlighting
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut current_col = 0;
+
+                    for col_idx in editor_state.viewport.left_column..(editor_state.viewport.left_column + available_width) {
+                        if col_idx >= chars.len() {
+                            break;
+                        }
+
+                        let ch = chars[col_idx];
+                        let byte_offset = line_start_byte + line.chars().take(col_idx).map(|c| c.len_utf8()).sum::<usize>();
+
+                        // Find highlight color for this position
+                        let color = highlight_spans
+                            .iter()
+                            .find(|span| byte_offset >= span.start_byte && byte_offset < span.end_byte)
+                            .map(|span| self.highlighter.theme().color_for(span.token_type))
+                            .unwrap_or(crossterm::style::Color::Reset);
+
+                        if !is_active {
+                            terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                        } else {
+                            terminal.set_fg(color)?;
+                        }
+                        terminal.print(&ch.to_string())?;
+                        current_col += 1;
+                    }
+                    terminal.reset_color()?;
+                } else {
+                    // Render without syntax highlighting
+                    let chars: Vec<char> = line.chars().skip(editor_state.viewport.left_column).take(available_width).collect();
+                    let line_str: String = chars.into_iter().collect();
+
+                    if !is_active {
+                        terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                    }
+                    terminal.print(&line_str)?;
+                    terminal.reset_color()?;
+                }
+            }
+        }
+
+        // Draw a vertical separator if this is the left pane
+        if pane_rect.x == 0 && pane_rect.width < terminal.size().0 {
+            let separator_x = pane_rect.x + pane_rect.width;
+            for y in pane_rect.y..(pane_rect.y + pane_rect.height) {
+                terminal.move_cursor(separator_x.saturating_sub(1), y)?;
+                terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                terminal.print("│")?;
+                terminal.reset_color()?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle terminal resize
     pub fn handle_resize(&mut self, width: u16, height: u16) {
         self.workspace.resize(width, height.saturating_sub(1));
+
+        // Recalculate split position if in split mode
+        if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+            self.layout.recalculate_split(width);
+        }
     }
 
     /// Handle an input event
@@ -406,18 +661,28 @@ impl App {
                 self.file_picker_results.clear();
             }
             KeyCode::Enter => {
-                // Open selected file
+                // Open selected file in the active pane
                 if let Some(result) = self.file_picker_results.get(self.file_picker_selected) {
-                    self.workspace.open_file(result.path.clone())?;
-                    self.mode = AppMode::Normal;
-                    self.file_picker_pattern.clear();
-                    self.file_picker_results.clear();
-                    // Invalidate highlight cache when opening a new file
-                    self.cached_highlights = None;
-                    self.cached_text_hash = 0;
-                    self.logged_highlighting = false;
-                    // Notify LSP about newly opened file
-                    self.notify_lsp_did_open();
+                    match self.workspace.open_file(result.path.clone()) {
+                        Ok(buffer_id) => {
+                            // Set the opened file to the active pane
+                            let pane = self.layout.active_pane();
+                            self.layout.set_buffer(pane, buffer_id);
+
+                            self.mode = AppMode::Normal;
+                            self.file_picker_pattern.clear();
+                            self.file_picker_results.clear();
+                            // Invalidate highlight cache when opening a new file
+                            self.cached_highlights = None;
+                            self.cached_text_hash = 0;
+                            self.logged_highlighting = false;
+                            // Notify LSP about newly opened file
+                            self.notify_lsp_did_open();
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("Failed to open file: {}", e));
+                        }
+                    }
                 }
             }
             KeyCode::Up => {
@@ -1220,7 +1485,113 @@ impl App {
 
     /// Handle key in normal mode
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
-        let Some(buffer) = self.workspace.active_buffer_mut() else {
+        // Handle buffer switching first (before checking for active buffer)
+        // because these commands don't need an active buffer to work
+        match (key.code, key.modifiers) {
+            // Ctrl+Tab - Next buffer (if terminal sends it properly)
+            (KeyCode::Tab, mods) if mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
+                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                if buffer_ids.is_empty() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let current_id = self.layout.active_buffer();
+                if let Some(current) = current_id {
+                    let current_idx = buffer_ids.iter().position(|&id| id == current).unwrap_or(0);
+                    let next_idx = (current_idx + 1) % buffer_ids.len();
+                    let next_id = buffer_ids[next_idx];
+
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, next_id);
+
+                    self.cached_highlights = None;
+                    self.cached_text_hash = 0;
+                    self.logged_highlighting = false;
+
+                    if let Some(buf) = self.workspace.get_buffer(next_id) {
+                        self.message = Some(format!("Switched to {}", buf.display_name()));
+                    }
+                } else if let Some(&first_id) = buffer_ids.first() {
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, first_id);
+                }
+                return Ok(ControlFlow::Continue);
+            }
+
+            // Ctrl+PageDown - Next buffer (reliable fallback)
+            (KeyCode::PageDown, KeyModifiers::CONTROL) => {
+                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                if buffer_ids.is_empty() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let current_id = self.layout.active_buffer();
+                if let Some(current) = current_id {
+                    let current_idx = buffer_ids.iter().position(|&id| id == current).unwrap_or(0);
+                    let next_idx = (current_idx + 1) % buffer_ids.len();
+                    let next_id = buffer_ids[next_idx];
+
+                    // Update layout to point to new buffer
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, next_id);
+
+                    // Clear highlight cache when switching buffers
+                    self.cached_highlights = None;
+                    self.cached_text_hash = 0;
+                    self.logged_highlighting = false;
+
+                    // Get buffer name for message
+                    if let Some(buf) = self.workspace.get_buffer(next_id) {
+                        self.message = Some(format!("Switched to {}", buf.display_name()));
+                    }
+                } else if let Some(&first_id) = buffer_ids.first() {
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, first_id);
+                }
+                return Ok(ControlFlow::Continue);
+            }
+
+            // Ctrl+PageUp or Ctrl+Shift+Tab - Previous buffer
+            (KeyCode::PageUp, KeyModifiers::CONTROL) | (KeyCode::BackTab, _) => {
+                let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                if buffer_ids.is_empty() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let current_id = self.layout.active_buffer();
+                if let Some(current) = current_id {
+                    let current_idx = buffer_ids.iter().position(|&id| id == current).unwrap_or(0);
+                    let prev_idx = if current_idx == 0 { buffer_ids.len() - 1 } else { current_idx - 1 };
+                    let prev_id = buffer_ids[prev_idx];
+
+                    // Update layout to point to new buffer
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, prev_id);
+
+                    // Clear highlight cache when switching buffers
+                    self.cached_highlights = None;
+                    self.cached_text_hash = 0;
+                    self.logged_highlighting = false;
+
+                    // Get buffer name for message
+                    if let Some(buf) = self.workspace.get_buffer(prev_id) {
+                        self.message = Some(format!("Switched to {}", buf.display_name()));
+                    }
+                } else if let Some(&first_id) = buffer_ids.first() {
+                    let pane = self.layout.active_pane();
+                    self.layout.set_buffer(pane, first_id);
+                }
+                return Ok(ControlFlow::Continue);
+            }
+            _ => {}
+        }
+
+        // Get the active buffer from the layout manager (not workspace's internal state)
+        let active_buffer_id = self.layout.active_buffer();
+        let Some(buffer_id) = active_buffer_id else {
+            return Ok(ControlFlow::Continue);
+        };
+        let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
             return Ok(ControlFlow::Continue);
         };
 
@@ -1247,8 +1618,43 @@ impl App {
                     return Ok(ControlFlow::Continue);
                 }
                 return Ok(ControlFlow::Exit);
+            } else if matches!(key.code, KeyCode::Char('3')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X 3 - Toggle vertical split (emacs-style)
+                let (term_width, _) = crossterm::terminal::size()?;
+                self.layout.toggle_split(term_width);
+
+                if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+                    // If opening split, assign current buffer to left pane
+                    if let Some(active_id) = self.layout.active_buffer() {
+                        self.layout.set_buffer(crate::workspace::PaneId::Left, active_id);
+
+                        // Find another buffer for right pane, or use the same one
+                        let buffer_ids: Vec<_> = self.workspace.buffer_ids();
+                        let other_id = buffer_ids.iter()
+                            .find(|&&id| id != active_id)
+                            .or_else(|| buffer_ids.first())
+                            .copied();
+
+                        if let Some(other_id) = other_id {
+                            self.layout.set_buffer(crate::workspace::PaneId::Right, other_id);
+                        }
+                    }
+                    self.message = Some("Split opened".to_string());
+                } else {
+                    self.message = Some("Split closed".to_string());
+                }
+                return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('o') | KeyCode::Char('O')) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X O - Switch pane (emacs-style)
+                if self.layout.mode() == crate::workspace::LayoutMode::VerticalSplit {
+                    self.layout.switch_pane();
+                    self.message = Some(format!("Switched to {:?} pane", self.layout.active_pane()));
+                } else {
+                    self.message = Some("Not in split mode".to_string());
+                }
+                return Ok(ControlFlow::Continue);
             }
-            // If not Ctrl+S or Ctrl+C, fall through to handle the key normally
+            // If not a recognized chord, fall through to handle the key normally
         }
 
         match (key.code, key.modifiers) {
@@ -1329,24 +1735,6 @@ impl App {
             (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
                 let current_line = buffer.editor_state().cursor.line;
                 buffer.editor_state_mut().viewport.center_on_line(current_line);
-            }
-
-            // Ctrl+Tab - Next buffer
-            (KeyCode::Tab, KeyModifiers::CONTROL) => {
-                self.workspace.next_buffer();
-                // Invalidate highlight cache when switching buffers
-                self.cached_highlights = None;
-                self.cached_text_hash = 0;
-                self.logged_highlighting = false;
-            }
-
-            // Ctrl+Shift+Tab - Previous buffer
-            (KeyCode::BackTab, _) => {
-                self.workspace.previous_buffer();
-                // Invalidate highlight cache when switching buffers
-                self.cached_highlights = None;
-                self.cached_text_hash = 0;
-                self.logged_highlighting = false;
             }
 
             // Ctrl+X - Start Emacs-style chord (Ctrl+X Ctrl+S for save, Ctrl+X Ctrl+C to exit)
@@ -1777,8 +2165,8 @@ impl App {
                 editor_state.ensure_cursor_visible();
             }
 
-            // Tab - Smart completion or indentation
-            (KeyCode::Tab, KeyModifiers::NONE) => {
+            // Tab - Smart completion or indentation (but not Ctrl+Tab)
+            (KeyCode::Tab, mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SHIFT) => {
                 // Determine if we should trigger completion or indent
                 let should_complete = if let Some(path) = buffer.file_path() {
                     if crate::lsp::Language::from_path(path).is_some() {
