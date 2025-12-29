@@ -50,18 +50,26 @@ fn main() -> anyhow::Result<()> {
     // Initialize terminal
     let terminal = Terminal::new()?;
 
+    // Initial render
+    app.render(&terminal)?;
+
     // Main event loop
     loop {
         // Poll for LSP messages (non-blocking)
-        app.poll_lsp_messages();
+        let had_lsp_updates = app.poll_lsp_messages();
 
-        // Render
-        app.render(&terminal)?;
+        // Only render if LSP had updates
+        if had_lsp_updates {
+            app.render(&terminal)?;
+        }
 
-        // Handle input with timeout (60 FPS target)
-        if let Some(event) = poll_event(Duration::from_millis(16))? {
+        // Handle input - wait for events (no timeout = blocks until event)
+        if let Some(event) = poll_event(Duration::from_millis(100))? {
             match app.handle_event(event)? {
-                ControlFlow::Continue => {}
+                ControlFlow::Continue => {
+                    // Render after handling input
+                    app.render(&terminal)?;
+                }
                 ControlFlow::Exit => break,
             }
         }

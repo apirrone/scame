@@ -66,6 +66,7 @@ pub enum CommandAction {
     CloseBuffer,
     FormatDocument,
     OrganizeImports,
+    ToggleSyntaxHighlighting,
 }
 
 pub struct App {
@@ -78,6 +79,7 @@ pub struct App {
     mode: AppMode,
     message: Option<String>,
     show_line_numbers: bool,
+    enable_syntax_highlighting: bool,
     clipboard: String,
     // Emacs-style key chord state
     waiting_for_second_key: bool,
@@ -160,6 +162,7 @@ impl App {
             buffer_highlight_cache: std::collections::HashMap::new(),
             message: None,
             show_line_numbers: true,
+            enable_syntax_highlighting: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -221,6 +224,7 @@ impl App {
                 mode: AppMode::Normal,
                 message: None,
                 show_line_numbers: true,
+                enable_syntax_highlighting: true,
                 clipboard: String::new(),
                 waiting_for_second_key: false,
                 file_picker_pattern: String::new(),
@@ -274,6 +278,7 @@ impl App {
             buffer_highlight_cache: std::collections::HashMap::new(),
             message: None,
             show_line_numbers: true,
+            enable_syntax_highlighting: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -383,6 +388,12 @@ impl App {
                 description: "Organize Python imports with isort".to_string(),
                 keybinding: None,
                 action: CommandAction::OrganizeImports,
+            },
+            Command {
+                name: "Toggle Syntax Highlighting".to_string(),
+                description: "Enable/disable syntax highlighting for better performance".to_string(),
+                keybinding: None,
+                action: CommandAction::ToggleSyntaxHighlighting,
             },
         ]
     }
@@ -521,7 +532,8 @@ impl App {
                 let buffer = self.workspace.get_buffer(id);
                 if let Some(buffer) = buffer {
             // Get syntax highlighting if supported (with caching)
-            let highlight_spans = if let Some(path) = buffer.file_path() {
+            let highlight_spans = if self.enable_syntax_highlighting {
+                if let Some(path) = buffer.file_path() {
                 if let Some(lang) = SupportedLanguage::from_path(path) {
                     // Compute hash of current text
                     let text = buffer.text_buffer().to_string();
@@ -571,6 +583,9 @@ impl App {
                             }
                         }
                     }
+                } else {
+                    None
+                }
                 } else {
                     None
                 }
@@ -683,6 +698,9 @@ impl App {
 
     /// Get cached syntax highlights for a buffer (with caching to avoid recomputing every frame)
     fn get_cached_highlights(&mut self, buffer_id: crate::workspace::BufferId) -> Option<Vec<crate::syntax::HighlightSpan>> {
+        if !self.enable_syntax_highlighting {
+            return None;
+        }
         let buffer = self.workspace.get_buffer(buffer_id)?;
         let path = buffer.file_path()?;
         let lang = crate::syntax::SupportedLanguage::from_path(path)?;
@@ -1376,6 +1394,11 @@ impl App {
                         self.message = Some("Buffer has no file path".to_string());
                     }
                 }
+            }
+            CommandAction::ToggleSyntaxHighlighting => {
+                self.enable_syntax_highlighting = !self.enable_syntax_highlighting;
+                let status = if self.enable_syntax_highlighting { "enabled" } else { "disabled" };
+                self.message = Some(format!("Syntax highlighting {}", status));
             }
         }
         Ok(ControlFlow::Continue)
@@ -3106,7 +3129,7 @@ impl App {
     }
 
     /// Poll for LSP messages (non-blocking)
-    pub fn poll_lsp_messages(&mut self) {
+    pub fn poll_lsp_messages(&mut self) -> bool {
         // Collect responses first to avoid borrow checker issues
         let mut responses = Vec::new();
         if let Some(receiver) = &mut self.lsp_receiver {
@@ -3115,10 +3138,14 @@ impl App {
             }
         }
 
+        let had_updates = !responses.is_empty();
+
         // Handle all collected responses
         for response in responses {
             self.handle_lsp_response(response);
         }
+
+        had_updates
     }
 
     /// Handle an LSP response
