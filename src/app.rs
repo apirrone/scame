@@ -24,6 +24,7 @@ pub enum AppMode {
     Normal,
     FilePicker,
     CommandPanel,       // Command palette (Ctrl+Shift+P)
+    ProjectSearch,      // Project-wide search (Ctrl+X Ctrl+F)
     ConfirmExit,
     Search,
     JumpToLine,
@@ -41,10 +42,20 @@ pub struct Command {
     pub action: CommandAction,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProjectSearchResult {
+    pub file_path: PathBuf,
+    pub line_number: usize,
+    pub line_content: String,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     Search,
     SearchAndReplace,
+    ProjectSearch,
     JumpToLine,
     OpenFile,
     SaveFile,
@@ -103,6 +114,10 @@ pub struct App {
     command_panel_pattern: String,
     command_panel_results: Vec<Command>,
     command_panel_selected: usize,
+    // Project search state
+    project_search_pattern: String,
+    project_search_results: Vec<ProjectSearchResult>,
+    project_search_selected: usize,
 }
 
 impl App {
@@ -166,6 +181,9 @@ impl App {
             command_panel_pattern: String::new(),
             command_panel_results: Vec::new(),
             command_panel_selected: 0,
+            project_search_pattern: String::new(),
+            project_search_results: Vec::new(),
+            project_search_selected: 0,
         })
     }
 
@@ -228,6 +246,9 @@ impl App {
                 command_panel_pattern: String::new(),
                 command_panel_results: Vec::new(),
                 command_panel_selected: 0,
+                project_search_pattern: String::new(),
+                project_search_results: Vec::new(),
+                project_search_selected: 0,
             });
         }
 
@@ -274,6 +295,9 @@ impl App {
             command_panel_pattern: String::new(),
             command_panel_results: Vec::new(),
             command_panel_selected: 0,
+            project_search_pattern: String::new(),
+            project_search_results: Vec::new(),
+            project_search_selected: 0,
         })
     }
 
@@ -291,6 +315,12 @@ impl App {
                 description: "Search and replace text in the current buffer".to_string(),
                 keybinding: Some("Ctrl+H".to_string()),
                 action: CommandAction::SearchAndReplace,
+            },
+            Command {
+                name: "Search in Project".to_string(),
+                description: "Search for text across all files in the project".to_string(),
+                keybinding: Some("Ctrl+X Ctrl+F".to_string()),
+                action: CommandAction::ProjectSearch,
             },
             Command {
                 name: "Jump to Line".to_string(),
@@ -584,6 +614,16 @@ impl App {
             )?;
         }
 
+        // Render project search overlay if active
+        if self.mode == AppMode::ProjectSearch {
+            crate::render::ProjectSearch::render(
+                terminal,
+                &self.project_search_pattern,
+                &self.project_search_results,
+                self.project_search_selected,
+            )?;
+        }
+
         // Render completion popup if active
         if self.mode == AppMode::Completion {
             let buffer_id = self.layout.active_buffer();
@@ -797,6 +837,7 @@ impl App {
             AppMode::Normal => self.handle_normal_mode(key),
             AppMode::FilePicker => self.handle_file_picker_mode(key),
             AppMode::CommandPanel => self.handle_command_panel_mode(key),
+            AppMode::ProjectSearch => self.handle_project_search_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
             AppMode::Search => self.handle_search_mode(key),
             AppMode::JumpToLine => self.handle_jump_to_line_mode(key),
@@ -937,6 +978,134 @@ impl App {
         Ok(ControlFlow::Continue)
     }
 
+    /// Handle key in project search mode
+    fn handle_project_search_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel project search
+                self.mode = AppMode::Normal;
+                self.project_search_pattern.clear();
+                self.project_search_results.clear();
+                self.message = None;
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel project search (Emacs style)
+                self.mode = AppMode::Normal;
+                self.project_search_pattern.clear();
+                self.project_search_results.clear();
+                self.message = None;
+            }
+            KeyCode::Enter => {
+                // Jump to selected result
+                if let Some(result) = self.project_search_results.get(self.project_search_selected) {
+                    let file_path = result.file_path.clone();
+                    let line_number = result.line_number;
+
+                    // Open the file
+                    match self.workspace.open_file(file_path.clone()) {
+                        Ok(buffer_id) => {
+                            // Set buffer to active pane
+                            let pane = self.layout.active_pane();
+                            self.layout.set_buffer(pane, buffer_id);
+
+                            // Jump to line
+                            if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                                buffer.editor_state_mut().cursor.line = line_number;
+                                buffer.editor_state_mut().cursor.column = 0;
+                                buffer.editor_state_mut().viewport.top_line = line_number.saturating_sub(5);
+                            }
+
+                            self.mode = AppMode::Normal;
+                            self.project_search_pattern.clear();
+                            self.project_search_results.clear();
+                            self.message = Some(format!("Jumped to {}:{}", file_path.display(), line_number + 1));
+                        }
+                        Err(e) => {
+                            self.message = Some(format!("Failed to open file: {}", e));
+                        }
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if self.project_search_selected > 0 {
+                    self.project_search_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.project_search_selected + 1 < self.project_search_results.len() {
+                    self.project_search_selected += 1;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.project_search_pattern.push(c);
+                self.update_project_search_results();
+            }
+            KeyCode::Backspace => {
+                self.project_search_pattern.pop();
+                self.update_project_search_results();
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    fn update_project_search_results(&mut self) {
+        if self.project_search_pattern.is_empty() {
+            self.project_search_results.clear();
+            self.project_search_selected = 0;
+            return;
+        }
+
+        // Build regex pattern
+        let pattern = match RegexBuilder::new(&self.project_search_pattern)
+            .case_insensitive(false)
+            .build()
+        {
+            Ok(p) => p,
+            Err(_) => {
+                self.project_search_results.clear();
+                self.project_search_selected = 0;
+                return;
+            }
+        };
+
+        let mut results = Vec::new();
+
+        // Search through all files in the project
+        if let Some(file_tree) = &self.file_tree {
+            for file_path in file_tree.files() {
+                // Read file contents
+                if let Ok(contents) = std::fs::read_to_string(file_path) {
+                    // Search each line
+                    for (line_idx, line) in contents.lines().enumerate() {
+                        if let Some(mat) = pattern.find(line) {
+                            results.push(ProjectSearchResult {
+                                file_path: file_path.clone(),
+                                line_number: line_idx,
+                                line_content: line.to_string(),
+                                match_start: mat.start(),
+                                match_end: mat.end(),
+                            });
+
+                            // Limit results to prevent UI slowdown
+                            if results.len() >= 1000 {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Limit results
+                if results.len() >= 1000 {
+                    break;
+                }
+            }
+        }
+
+        self.project_search_results = results;
+        self.project_search_selected = 0;
+    }
+
     /// Execute a command from the command panel
     fn execute_command(&mut self, action: CommandAction) -> Result<ControlFlow> {
         match action {
@@ -959,6 +1128,18 @@ impl App {
                 self.replace_with.clear();
                 self.replace_count = 0;
                 self.message = Some("Search pattern:".to_string());
+            }
+            CommandAction::ProjectSearch => {
+                // Enter project search mode
+                if self.file_tree.is_some() {
+                    self.mode = AppMode::ProjectSearch;
+                    self.project_search_pattern.clear();
+                    self.project_search_results.clear();
+                    self.project_search_selected = 0;
+                    self.message = Some("Project Search".to_string());
+                } else {
+                    self.message = Some("No project directory open".to_string());
+                }
             }
             CommandAction::JumpToLine => {
                 // Enter jump to line mode
@@ -1974,6 +2155,18 @@ impl App {
                 self.command_panel_results = Self::filter_commands("");
                 self.command_panel_selected = 0;
                 self.message = Some("Command Palette (Ctrl+X Ctrl+P)".to_string());
+                return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X Ctrl+F - Project search
+                if self.file_tree.is_some() {
+                    self.mode = AppMode::ProjectSearch;
+                    self.project_search_pattern.clear();
+                    self.project_search_results.clear();
+                    self.project_search_selected = 0;
+                    self.message = Some("Project Search (Ctrl+X Ctrl+F)".to_string());
+                } else {
+                    self.message = Some("No project directory open".to_string());
+                }
                 return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+S - Save
