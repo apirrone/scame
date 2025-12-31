@@ -1,186 +1,10 @@
 # scame - Fast Terminal Text Editor
 
-A super-fast terminal-based text editor/IDE written in Rust with minimal dependencies and AI-powered code completions.
+A super-fast terminal-based text editor/IDE written in Rust with AI-powered code completions, LSP support, and syntax highlighting.
 
-## Current Status: Phase 6 Complete ✅
+## Quick Start
 
-### Implemented Features (Phases 1, 2, 3, 4, 5 & 6)
-
-**Core Text Editing:**
-- ✅ Open and edit single files
-- ✅ Insert and delete characters
-- ✅ Line-based editing with rope data structure (O(log n) operations)
-- ✅ Copy/Paste (Ctrl+C, Ctrl+V) with internal clipboard
-- ✅ Kill line (Ctrl+K) - Emacs-style delete to end of line
-- ✅ Line numbers display
-- ✅ Status bar with file info and cursor position
-- ✅ Undo/Redo (Ctrl+Z, Ctrl+Shift+Z)
-- ✅ File save (Ctrl+S)
-
-**Cursor Movement:**
-- ✅ Arrow keys navigation
-- ✅ Home/End keys (start/end of line)
-- ✅ Ctrl+A (beginning of line, Emacs style)
-- ✅ Ctrl+E (end of line, Emacs style)
-- ✅ Ctrl+Left/Right - Word-based navigation (jump by words)
-- ✅ Ctrl+Up/Down - Block-based navigation (jump by paragraphs/blank lines)
-- ✅ Page Up/Page Down
-- ✅ Shift + Arrow keys for text selection (visual highlighting)
-- ✅ Ctrl+Shift+Left/Right - Select word by word
-- ✅ Ctrl+Shift+A/E - Select to start/end of line
-
-**Keyboard Shortcuts:**
-
-*Navigation:*
-- `Arrow Keys` - Move cursor one character/line
-- `Ctrl+Left/Right` - Move by word
-- `Ctrl+Up/Down` - Move by block (paragraphs)
-- `Ctrl+A` - Beginning of line (Emacs style)
-- `Ctrl+E` - End of line (Emacs style)
-- `Home/End` - Line start/end
-- `Page Up/Down` - Page scrolling
-
-*Selection:*
-- `Shift + Arrows` - Select character by character
-- `Ctrl+Shift+Left/Right` - Select word by word
-- `Ctrl+Shift+A` - Select to start of line
-- `Ctrl+Shift+E` - Select to end of line
-
-*Editing:*
-- `Ctrl+C` - Copy selected text to clipboard
-- `Ctrl+V` - Paste from clipboard
-- `Ctrl+K` - Kill line (delete from cursor to end of line, copies to clipboard)
-- `Ctrl+Z` - Undo
-- `Ctrl+Shift+Z` - Redo
-- `Backspace/Delete` - Delete characters
-- `Enter` - New line
-- `Tab` - Insert 4 spaces (soft tabs, useful for Python indentation)
-
-*File Operations:*
-- `Ctrl+X Ctrl+S` - Save file (Emacs style - press Ctrl+X, then Ctrl+S)
-- `Ctrl+X Ctrl+C` - Exit editor (Emacs style - press Ctrl+X, then Ctrl+C)
-- `Ctrl+Q` - Quit (with save prompt if modified)
-
-*Search (Emacs-style):*
-- `Ctrl+S` - Search forward (incremental, **regex by default**, case-insensitive)
-  - Press `Ctrl+S` again to find next occurrence forward
-  - Shows "Last occurrence" when no more matches found
-- `Ctrl+R` - Search backward/reverse (incremental, **regex by default**, case-insensitive)
-  - Press `Ctrl+R` again to find next occurrence backward
-  - Shows "First occurrence" when no more matches found
-- `Ctrl+T` - Toggle regex mode (while in search mode)
-  - Status bar shows "[REGEX]" indicator when enabled
-  - Press Ctrl+T to switch to plain string search
-  - Supports full regex patterns (e.g., `\d+`, `[a-z]+`, `\w+`)
-- `Enter`, `Esc`, `Ctrl+G`, or arrow keys - Exit search mode (clears selection)
-- Type to search as you go, backspace to edit pattern
-- Found text is highlighted while searching
-- **Both modes are case-insensitive by default**
-
-*Search and Replace:*
-- `Ctrl+H` - Query-replace (search and replace interactively, **regex by default**, case-insensitive)
-  - Enter search pattern (regex patterns supported, e.g., `\d+`, `[a-z]+`)
-  - Press `Ctrl+T` to toggle between regex and plain string mode
-  - Enter replacement string
-  - For each match: `y` (replace), `n` (skip), `a` (replace all), `q` (quit)
-  - Shows count of replacements made
-  - Status bar shows "[REGEX]" indicator when in regex mode
-  - **Both modes are case-insensitive by default**
-  - Supports undo (Ctrl+Z after completing replacements)
-
-*Navigation:*
-- `Alt+G` - Jump to line (enter line number, press Enter to jump)
-- `Ctrl+J` or `Ctrl+L` - Center view on cursor (Emacs style - scrolls viewport to center cursor vertically)
-- `F12` - Jump to definition (LSP - works with Rust/Python when language server installed)
-- `Alt+F12` - Jump back to previous location (navigate back through jump history)
-
-*Code Completion (LSP):*
-- `Ctrl+Space` - Trigger auto-completion suggestions
-  - `↑↓` arrows to navigate suggestions
-  - `Enter` to insert selected completion
-  - `Esc` or `Ctrl+G` to cancel
-
-*AI Completions (GitHub Copilot-style):*
-- **Automatic inline suggestions** - AI suggests code completions as you type (150ms debounce)
-  - Appears as gray ghost text after cursor
-  - Multi-line suggestions shown as ghost lines below cursor
-- `Tab` - Accept AI suggestion (inserts full multi-line completion)
-- `Esc` - Explicitly dismiss suggestion (with message)
-- **Auto-dismiss** - Suggestion automatically disappears when you:
-  - Move cursor (arrow keys, Page Up/Down, Home, End)
-  - Execute any command (Ctrl+S, Ctrl+P, etc.)
-  - Type new characters (starts new suggestion)
-- `Ctrl+Shift+P` → "Toggle AI Completions [ON/OFF]" - Enable/disable AI completions
-
-*Universal Cancel:*
-- `Esc` or `Ctrl+G` - Cancel/exit any mode (search, file picker, prompts)
-- Arrow keys in search mode - Exit search and move cursor
-
-**Note:** Block cursor is always visible and indicates current position.
-
-**Project Mode (NEW in Phase 2):**
-- ✅ Multi-buffer workspace (switch between multiple open files)
-- ✅ File picker with fuzzy search (`Ctrl+P`) - quickly open files in project
-- ✅ **Smart .gitignore support** - automatically excludes ignored files/folders
-- ✅ Emacs-style file backups (creates `~backup` files automatically)
-- ✅ Buffer switching: `Ctrl+Tab` (next), `Ctrl+Shift+Tab` (previous)
-- ✅ Open directory as project: `./scame .` or `./scame /path/to/project`
-
-**New Keyboard Shortcuts:**
-- `Ctrl+P` - Fuzzy file picker (type to search, Enter to open, Esc/Ctrl+G to cancel)
-  - **Smart priority**: Prioritizes files with same extension as current file!
-  - E.g., in a `.py` file, Python files rank higher in search results
-  - **Respects .gitignore**: Won't show ignored files (node_modules, target, etc.)
-- `Ctrl+Tab` - Switch to next buffer
-- `Ctrl+Shift+Tab` - Switch to previous buffer
-- Arrow keys in file picker to navigate results
-
-**Syntax Highlighting (NEW in Phase 3):**
-- ✅ Tree-sitter powered syntax highlighting
-- ✅ **Python support** - Full syntax highlighting for `.py` files
-- ✅ **Rust support** - Full syntax highlighting for `.rs` files
-- ✅ VS Code Dark+ inspired color theme
-- ✅ Automatic language detection from file extension
-- ✅ Smart caching for performance
-- ✅ Graceful fallback if highlighting fails
-
-**Search Features (NEW in Phase 4):**
-- ✅ **Incremental search** - Search as you type (Emacs-style)
-- ✅ **Forward search** (Ctrl+S) - Find text ahead of cursor, press Ctrl+S again to iterate
-- ✅ **Reverse search** (Ctrl+R) - Find text before cursor, press Ctrl+R again to iterate
-- ✅ **Automatic selection** - Found text is highlighted
-- ✅ **Bidirectional iteration** - Switch between forward/backward in same search
-
-**LSP Integration (NEW in Phase 5):**
-- ✅ **Real-time diagnostics** - Errors and warnings displayed inline with colored markers (●)
-- ✅ **Jump to definition** (F12) - Navigate to symbol definitions across files
-- ✅ **Jump back** (Alt+F12) - Return to previous locations (up to 50 levels)
-- ✅ **Auto-completion** (Ctrl+Space) - Intelligent code suggestions with icons
-- ✅ **Language support** - Rust (rust-analyzer) and Python (pyright/pylsp)
-- ✅ **Non-blocking architecture** - Maintains 60 FPS while communicating with language servers
-
-**AI-Powered Code Completions (NEW in Phase 6):**
-- ✅ **GitHub Copilot-style inline suggestions** - AI completions appear as gray ghost text
-- ✅ **Multi-line completions** - Full function implementations, not just single lines
-- ✅ **Multiple AI providers** - Support for Claude, OpenAI, GitHub Copilot, and local LLMs
-- ✅ **Automatic triggering** - Suggestions appear as you type (150ms debounce)
-- ✅ **Smart overlap detection** - Prevents duplicate code when accepting suggestions
-- ✅ **Ghost text rendering** - Multi-line suggestions shown as gray lines below cursor
-- ✅ **Tab to accept** - Press Tab to insert full multi-line completion
-- ✅ **Auto-dismiss** - Suggestions disappear on cursor movement or commands
-- ✅ **Toggle command** - Enable/disable AI completions via command palette
-- ✅ **Prompt caching** - Fast responses with Claude's ephemeral cache (90% latency reduction)
-- ✅ **Non-blocking** - All API calls run asynchronously, maintains 60 FPS
-
-**Diff Viewer:**
-- ✅ **Side-by-side diff** - GitHub PR-style diff viewer with syntax highlighting
-- ✅ **Command:** `scame --diff file1.py file2.py`
-- ✅ **Navigation:** Arrow keys, j/k, PgUp/PgDn to scroll, q to quit
-- ✅ **Syntax highlighting** - Supports Python and Rust files
-
-## Installation
-
-### Quick Install (Recommended)
+### Installation
 
 Install with a single command:
 
@@ -188,80 +12,309 @@ Install with a single command:
 curl -sSL https://raw.githubusercontent.com/apirrone/scame/main/install.sh | sh
 ```
 
-This will automatically:
-- Detect your platform (x86_64, ARM64, or ARMv7)
-- Download the latest release binary
-- Install to `/usr/local/bin` or `~/.local/bin`
-- Make it executable and ready to use
+**Supported Platforms:** Linux (x86_64, ARM64, ARMv7 / Raspberry Pi)
 
-### Supported Platforms
-
-- **Linux x86_64** - Standard Linux on Intel/AMD 64-bit processors
-- **Linux ARM64** - Raspberry Pi 4/5 (64-bit), Apple Silicon Linux VMs
-- **Linux ARMv7** - Raspberry Pi 2/3/4 (32-bit)
-
-### Manual Installation
-
-Download the appropriate binary from the [latest release](https://github.com/apirrone/scame/releases/latest):
+### Building from Source
 
 ```bash
-# Download for your platform
-wget https://github.com/apirrone/scame/releases/latest/download/scame-linux-x86_64.tar.gz
+# Clone and build
+git clone https://github.com/apirrone/scame.git
+cd scame
+cargo build --release
 
-# Extract
-tar xzf scame-linux-x86_64.tar.gz
+# Run
+./target/release/scame myfile.py
+./target/release/scame .  # Open directory as project
+```
 
-# Move to PATH
-sudo mv scame-linux-x86_64 /usr/local/bin/scame
-sudo chmod +x /usr/local/bin/scame
+### Basic Usage
 
-# Verify installation
+```bash
+# Open a file
+scame myfile.py
+
+# Open a project directory
+scame /path/to/project
+
+# Side-by-side diff viewer
+scame --diff file1.py file2.py
+
+# Show version
 scame --version
 ```
 
-## Building from Source
+**Essential Shortcuts:**
+- `Ctrl+S` - Save file
+- `Ctrl+Q` - Quit
+- `Ctrl+P` - File picker (fuzzy search)
+- `Ctrl+Space` - Auto-completion (LSP)
+- `Tab` - Accept AI suggestion
+- `Ctrl+Shift+P` - Command palette
 
+---
+
+## Features
+
+<details>
+<summary><b>📝 Core Text Editing</b></summary>
+
+- ✅ Rope-based text buffer (O(log n) operations)
+- ✅ Multiple buffers / workspace management
+- ✅ Copy/Paste with system clipboard integration
+- ✅ Undo/Redo (Ctrl+Z, Ctrl+Shift+Z)
+- ✅ Line numbers and status bar
+- ✅ Smart indentation (4 spaces, configurable)
+- ✅ Python indentation guides (vertical lines)
+- ✅ Terminal resize support
+
+</details>
+
+<details>
+<summary><b>🎨 Syntax Highlighting</b></summary>
+
+Tree-sitter powered syntax highlighting with VS Code Dark+ inspired theme:
+
+**Supported Languages:**
+- Python (`.py`)
+- Rust (`.rs`)
+- JSON (`.json`)
+- Markdown (`.md`)
+- JavaScript (`.js`)
+- HTML/CSS
+
+Features:
+- Automatic language detection
+- Smart caching for performance
+- Graceful fallback if highlighting fails
+
+</details>
+
+<details>
+<summary><b>🔍 Search & Replace</b></summary>
+
+- **Incremental Search** (Ctrl+S forward, Ctrl+R reverse)
+  - Search as you type
+  - Regex support by default (toggle with Ctrl+T)
+  - Case-insensitive
+  - Press Ctrl+S/R again to find next/previous
+
+- **Search & Replace** (Ctrl+H)
+  - Interactive query-replace
+  - Regex patterns supported
+  - Options: replace (y), skip (n), replace all (a), quit (q)
+
+- **Jump to Line** (Alt+G)
+
+</details>
+
+<details>
+<summary><b>🤖 AI-Powered Completions</b></summary>
+
+GitHub Copilot-style inline code suggestions:
+
+- **Multi-line completions** - Full function implementations, not just single lines
+- **Ghost text rendering** - Suggestions appear as gray text after cursor
+- **Tab to accept** - Insert full completion with Tab key
+- **Auto-trigger** - Suggestions appear as you type (150ms debounce)
+- **Auto-dismiss** - Disappears on cursor movement or commands
+- **Toggle on/off** - Via command palette (Ctrl+Shift+P)
+
+**Supported AI Providers:**
+- Claude (Anthropic) - Best quality, prompt caching for speed
+- OpenAI (GPT-4, GPT-3.5)
+- GitHub Copilot
+- Local LLMs (Ollama, custom endpoints)
+
+**Quick Setup:**
 ```bash
-# Build in release mode (optimized)
-cargo build --release
-
-# Run the editor
-cargo run --release
-
-# Open a specific file
-cargo run --release -- test.txt
-./target/release/scame test.txt
-
-# Open a project directory
-cargo run --release -- .
-cargo run --release -- /path/to/project
+export ANTHROPIC_API_KEY="sk-ant-xxxxx"
+export SCAME_AI_PROVIDER="claude"
+./target/release/scame myfile.py
 ```
 
-## Quick Start with AI Completions
+<details>
+<summary>Detailed AI Configuration</summary>
 
-1. **Set up your API key:**
-   ```bash
-   export ANTHROPIC_API_KEY="sk-ant-xxxxx"
-   export SCAME_AI_PROVIDER="claude"
-   ```
+Create `~/.scame/config.toml`:
 
-2. **Start editing:**
-   ```bash
-   ./target/release/scame myfile.py
-   ```
+```toml
+[ai]
+enabled = true
+provider = "claude"  # Options: "claude", "openai", "copilot", "local"
+debounce_ms = 150
 
-3. **Try it out:**
-   - Type `def fibonacci` and wait 150ms
-   - Gray ghost text will appear showing the suggested implementation
-   - Press `Tab` to accept the full multi-line suggestion
-   - Press `Esc` or move cursor to dismiss
+[ai.claude]
+api_key = "sk-ant-xxxxx"
+model = "claude-3-5-sonnet-20241022"
 
-4. **Toggle AI completions:**
-   - Press `Ctrl+Shift+P` to open command palette
-   - Type "toggle ai" and press Enter
-   - Shows current status: `[ON]` or `[OFF]`
+[ai.openai]
+api_key = "sk-xxxxx"
+model = "gpt-4"
 
-## Project Architecture
+[ai.copilot]
+api_token = "gho_xxxxx"
+
+[ai.local]
+endpoint = "http://localhost:11434/api/generate"  # Ollama
+```
+
+**Get API Keys:**
+- Claude: https://console.anthropic.com/
+- OpenAI: https://platform.openai.com/api-keys
+- GitHub: https://github.com/settings/tokens
+
+</details>
+
+</details>
+
+<details>
+<summary><b>🔧 LSP Integration</b></summary>
+
+Language Server Protocol support for intelligent code features:
+
+- **Real-time diagnostics** - Errors and warnings displayed inline (● markers)
+- **Jump to definition** (F12) - Navigate to symbol definitions across files
+- **Jump back** (Alt+F12) - Return to previous location
+- **Auto-completion** (Ctrl+Space) - Context-aware code suggestions with icons
+- **Non-blocking** - Maintains 60 FPS while communicating with language servers
+
+**Supported Languages:**
+- Rust (rust-analyzer)
+- Python (pyright, python-lsp-server)
+
+**Install Language Servers:**
+```bash
+# Rust
+rustup component add rust-analyzer
+
+# Python (choose one)
+npm install -g pyright            # Recommended
+pip install python-lsp-server     # Alternative
+```
+
+</details>
+
+<details>
+<summary><b>🔀 Diff Viewer</b></summary>
+
+GitHub PR-style side-by-side diff viewer:
+
+```bash
+scame --diff file1.py file2.py
+```
+
+Features:
+- Side-by-side comparison with color-coded changes
+- Syntax highlighting (Python, Rust)
+- Navigation: Arrow keys, j/k, PgUp/PgDn
+- Quit: q, Esc, or Ctrl+C
+
+</details>
+
+<details>
+<summary><b>📂 Project Management</b></summary>
+
+- Multi-buffer workspace (switch between files)
+- File picker with fuzzy search (Ctrl+P)
+- Smart .gitignore support
+- Extension-aware file prioritization
+- Emacs-style file backups (~backup files)
+- Buffer switching: Ctrl+Tab (next), Ctrl+Shift+Tab (previous)
+
+</details>
+
+---
+
+## Keyboard Shortcuts
+
+<details>
+<summary><b>View All Shortcuts</b></summary>
+
+### Navigation
+- `Arrow Keys` - Move cursor
+- `Ctrl+Left/Right` - Move by word
+- `Ctrl+Up/Down` - Move by block (paragraphs)
+- `Ctrl+A` - Beginning of line (Emacs style)
+- `Ctrl+E` - End of line (Emacs style)
+- `Home/End` - Line start/end
+- `Page Up/Down` - Page scrolling
+- `Ctrl+J` or `Ctrl+L` - Center view on cursor
+
+### Selection
+- `Shift + Arrows` - Select character by character
+- `Ctrl+Shift+Left/Right` - Select word by word
+- `Ctrl+Shift+A` - Select to start of line
+- `Ctrl+Shift+E` - Select to end of line
+
+### Editing
+- `Ctrl+C` - Copy selected text (to system clipboard)
+- `Ctrl+V` - Paste (from system clipboard)
+- `Ctrl+K` - Kill line (delete to end of line, copies to clipboard)
+- `Ctrl+Z` - Undo
+- `Ctrl+Shift+Z` - Redo
+- `Tab` - Insert 4 spaces (or accept AI suggestion)
+- `Backspace/Delete` - Delete characters
+
+### File Operations
+- `Ctrl+X Ctrl+S` - Save file (Emacs style)
+- `Ctrl+X Ctrl+C` - Exit editor (Emacs style)
+- `Ctrl+Q` - Quit (with save prompt if modified)
+
+### Search
+- `Ctrl+S` - Search forward (incremental, regex by default)
+  - Press `Ctrl+S` again to find next
+  - `Ctrl+T` to toggle regex/plain string mode
+- `Ctrl+R` - Search backward/reverse
+  - Press `Ctrl+R` again to find previous
+- `Ctrl+H` - Search and replace (interactive query-replace)
+  - `y` - replace, `n` - skip, `a` - replace all, `q` - quit
+- `Enter/Esc/Ctrl+G` - Exit search mode
+
+### Navigation
+- `Alt+G` - Jump to line
+- `F12` - Jump to definition (LSP)
+- `Alt+F12` - Jump back to previous location
+
+### Code Completion
+- `Ctrl+Space` - Trigger LSP auto-completion
+  - `↑↓` arrows to navigate suggestions
+  - `Enter` to insert, `Esc` to cancel
+- `Tab` - Accept AI suggestion
+- `Esc` - Dismiss AI suggestion
+
+### Project
+- `Ctrl+P` - File picker (fuzzy search)
+  - Type to search, `Enter` to open, `Esc` to cancel
+  - Smart extension prioritization
+- `Ctrl+Tab` - Switch to next buffer
+- `Ctrl+Shift+Tab` - Switch to previous buffer
+- `Ctrl+Shift+P` - Command palette
+  - Toggle AI completions [ON/OFF]
+  - Toggle indentation guides [ON/OFF]
+
+### Universal Cancel
+- `Esc` or `Ctrl+G` - Cancel/exit any mode
+
+</details>
+
+---
+
+## Performance
+
+- **Startup:** ~10-20ms (minimal dependencies, lazy loading)
+- **Edit latency:** < 1ms for character insertion (rope-based buffer)
+- **Rendering:** 60 FPS target (16ms frame budget)
+- **Memory:** ~5-10MB for typical editing session
+- **AI Completions:** Non-blocking async, maintains 60 FPS
+  - Claude with prompt caching: ~100-200ms response time
+  - Without caching: ~500-1000ms response time
+
+---
+
+## Architecture
+
+<details>
+<summary><b>Project Structure</b></summary>
 
 ```
 scame/
@@ -274,7 +327,7 @@ scame/
 │   │   └── movement.rs     # Cursor movement logic
 │   ├── render/          # Terminal rendering
 │   │   ├── terminal.rs     # Terminal control (crossterm)
-│   │   ├── buffer_view.rs  # Text buffer rendering (includes ghost text)
+│   │   ├── buffer_view.rs  # Text buffer rendering with ghost text
 │   │   └── statusbar.rs    # Status bar
 │   ├── ai/              # AI completion system
 │   │   ├── manager.rs      # Channel-based async AI manager
@@ -286,164 +339,18 @@ scame/
 │   │       └── local.rs    # Local LLM endpoint
 │   ├── lsp/             # Language Server Protocol
 │   │   └── manager.rs      # LSP client and manager
+│   ├── syntax/          # Syntax highlighting (Tree-sitter)
+│   ├── diff.rs          # Side-by-side diff viewer
+│   ├── workspace/       # Multi-buffer workspace
 │   ├── config.rs        # Configuration (TOML + env vars)
 │   ├── app.rs           # Main application logic
 │   └── main.rs          # Entry point and event loop
 ```
 
-## Performance Characteristics
+</details>
 
-- **Startup:** ~10-20ms (minimal dependencies, lazy loading)
-- **Edit latency:** < 1ms for character insertion (rope-based buffer)
-- **Rendering:** 60 FPS target (16ms frame budget)
-- **Memory:** ~5-10MB for typical editing session
-- **AI Completions:** 150ms debounce, non-blocking async (maintains 60 FPS)
-  - Claude with prompt caching: ~100-200ms response time
-  - Without caching: ~500-1000ms response time
-
-## Roadmap
-
-### Phase 2: Project & File Management ✅ COMPLETE
-- [x] Multi-buffer workspace management
-- [x] File search (Ctrl+P) with fuzzy matching
-- [x] Emacs-style file backups (~backup files)
-- [x] Buffer switching keybindings
-
-### Phase 3: Syntax Highlighting ✅ COMPLETE
-- [x] Tree-sitter integration
-- [x] Python syntax highlighting
-- [x] Rust syntax highlighting
-- [x] Color themes
-
-### Phase 4: Search Features ✅ COMPLETE
-- [x] Global search (Ctrl+S forward, Ctrl+R reverse) - **Regex by default**
-- [x] Incremental search (search as you type) - **Regex by default**
-- [x] Jump to line (Alt+G)
-- [x] Regex search support (Ctrl+T to toggle between regex/plain string)
-- [x] Search and replace (Ctrl+H interactive query-replace) - **Regex by default**
-
-### Phase 5: LSP Integration ✅ COMPLETE
-- [x] LSP client with tower-lsp (background Tokio task)
-- [x] Text synchronization (didOpen, didChange, didSave)
-- [x] Diagnostics display (● markers in gutter, E:/W: counts in status bar)
-- [x] Non-blocking channel architecture (maintains 60 FPS)
-- [x] Jump to definition (F12) - works with rust-analyzer and pyright!
-- [x] Jump back (Alt+F12) - navigate back through jump history
-- [x] Auto-completion (Ctrl+Space) - intelligent code suggestions with popup UI
-
-**Supported Languages:**
-- Rust (rust-analyzer)
-- Python (pyright, python-lsp-server)
-
-**Installing Language Servers:**
-
-For **Rust** (rust-analyzer):
-```bash
-rustup component add rust-analyzer
-```
-
-For **Python** (choose one):
-```bash
-# Option 1: Pyright (recommended, faster)
-npm install -g pyright
-
-# Option 2: Python LSP Server (fallback)
-pip install python-lsp-server
-```
-
-The editor will automatically try alternatives if the primary server isn't found.
-
-**Configuring AI Completions:**
-
-AI completions are configured via `~/.scame/config.toml` or environment variables.
-
-**Option 1: Quick Setup (Environment Variables)**
-
-The easiest way to get started:
-
-```bash
-# For Claude (recommended for speed with prompt caching)
-export ANTHROPIC_API_KEY="sk-ant-xxxxx"
-export SCAME_AI_PROVIDER="claude"
-
-# For OpenAI
-export OPENAI_API_KEY="sk-xxxxx"
-export SCAME_AI_PROVIDER="openai"
-
-# For GitHub Copilot
-export GITHUB_TOKEN="gho_xxxxx"
-export SCAME_AI_PROVIDER="copilot"
-```
-
-Add these to your `~/.bashrc` or `~/.zshrc` to make them permanent.
-
-**Option 2: Configuration File (Recommended for permanent setup)**
-
-Create the configuration file:
-
-```bash
-# Create config directory
-mkdir -p ~/.scame
-
-# Create config file
-cat > ~/.scame/config.toml << 'EOF'
-[ai]
-enabled = true
-provider = "claude"
-debounce_ms = 150
-
-[ai.claude]
-api_key = "sk-ant-xxxxx"
-model = "claude-3-5-sonnet-20241022"
-EOF
-
-# Or edit manually
-vim ~/.scame/config.toml
-```
-
-**Full Configuration File Format (~/.scame/config.toml):**
-```toml
-[ai]
-enabled = true
-provider = "claude"  # Options: "claude", "openai", "copilot", "local"
-debounce_ms = 150    # Delay before triggering completion (milliseconds)
-
-[ai.claude]
-api_key = "sk-ant-xxxxx"
-model = "claude-3-5-sonnet-20241022"  # Or "claude-3-5-haiku-20241022" for speed
-
-[ai.openai]
-api_key = "sk-xxxxx"
-model = "gpt-4"  # Or "gpt-3.5-turbo"
-
-[ai.copilot]
-api_token = "gho_xxxxx"
-
-[ai.local]
-endpoint = "http://localhost:11434/api/generate"  # Ollama default endpoint
-```
-
-**Supported AI Providers:**
-- **Claude (Anthropic)** - Best quality, prompt caching for speed, models: claude-3-5-sonnet, claude-3-5-haiku
-- **OpenAI** - Reliable, models: gpt-4, gpt-3.5-turbo
-- **GitHub Copilot** - Native GitHub integration (requires token)
-- **Local LLMs** - Use Ollama or any local HTTP endpoint for privacy/offline use
-
-**Getting API Keys:**
-- Claude: https://console.anthropic.com/
-- OpenAI: https://platform.openai.com/api-keys
-- GitHub: https://github.com/settings/tokens
-
-### Phase 6: AI Completions & Polish ✅ COMPLETE
-- [x] AI-powered code completions (GitHub Copilot-style)
-- [x] Multiple provider support (Claude, OpenAI, Copilot, Local)
-- [x] Configuration system (TOML + environment variables)
-- [x] Command palette toggle for AI completions
-- [ ] Horizontal/vertical splits
-- [ ] Multiple tabs
-- [ ] Git integration
-
-## Dependencies
+<details>
+<summary><b>Dependencies</b></summary>
 
 **Core:**
 - `crossterm` - Terminal UI (cross-platform)
@@ -451,16 +358,84 @@ endpoint = "http://localhost:11434/api/generate"  # Ollama default endpoint
 - `anyhow` - Error handling
 
 **Features:**
-- `tree-sitter` - Syntax parsing (Phase 3) ✅
-- `tower-lsp` - LSP client (Phase 5) ✅
-- `tokio` - Async runtime for LSP and AI (Phase 5 & 6) ✅
-- `lsp-types` - LSP protocol types (Phase 5) ✅
-- `regex` - Search support (Phase 4) ✅
-- `fuzzy-matcher` - File search (Phase 2) ✅
-- `ignore` - .gitignore support (Phase 2) ✅
-- `reqwest` - HTTP client for AI providers (Phase 6) ✅
-- `serde` / `serde_json` - Configuration and API serialization (Phase 6) ✅
-- `toml` - Configuration file parsing (Phase 6) ✅
+- `tree-sitter` - Syntax parsing
+- `tower-lsp` - LSP client
+- `tokio` - Async runtime for LSP and AI
+- `lsp-types` - LSP protocol types
+- `regex` - Search support
+- `fuzzy-matcher` - File search
+- `ignore` - .gitignore support
+- `similar` - Diff computation
+- `arboard` - System clipboard
+- `reqwest` - HTTP client for AI providers
+- `serde` / `serde_json` / `toml` - Configuration
+
+</details>
+
+---
+
+## Development Roadmap
+
+<details>
+<summary><b>Completed Phases</b></summary>
+
+### Phase 1: Basic Editor ✅
+- [x] Core text editing (insert, delete, navigate)
+- [x] Rope data structure
+- [x] Copy/paste, undo/redo
+- [x] Line numbers and status bar
+
+### Phase 2: Project Management ✅
+- [x] Multi-buffer workspace
+- [x] File picker with fuzzy search (Ctrl+P)
+- [x] .gitignore support
+- [x] Buffer switching
+
+### Phase 3: Syntax Highlighting ✅
+- [x] Tree-sitter integration
+- [x] Python, Rust, JSON, Markdown, JavaScript, HTML/CSS
+- [x] VS Code Dark+ inspired theme
+
+### Phase 4: Search Features ✅
+- [x] Incremental search (forward/reverse)
+- [x] Regex support with toggle
+- [x] Search and replace
+- [x] Jump to line
+
+### Phase 5: LSP Integration ✅
+- [x] Real-time diagnostics
+- [x] Jump to definition / jump back
+- [x] Auto-completion (Ctrl+Space)
+- [x] Rust and Python support
+- [x] Non-blocking architecture
+
+### Phase 6: AI & Polish ✅
+- [x] AI-powered code completions
+- [x] Multiple provider support (Claude, OpenAI, Copilot, Local)
+- [x] Configuration system (TOML + env vars)
+- [x] Command palette toggles
+- [x] System clipboard integration
+- [x] Python indentation guides
+- [x] Terminal resize support
+- [x] Side-by-side diff viewer
+
+</details>
+
+<details>
+<summary><b>Future Plans</b></summary>
+
+### Phase 7: Advanced Features
+- [ ] Horizontal/vertical splits
+- [ ] Multiple tabs
+- [ ] Git integration (status, diff, blame)
+- [ ] File tree sidebar
+- [ ] More language servers
+- [ ] Snippets support
+- [ ] Macro recording
+
+</details>
+
+---
 
 ## Design Principles
 
@@ -470,17 +445,22 @@ endpoint = "http://localhost:11434/api/generate"  # Ollama default endpoint
 4. **Clean architecture** - Modular, testable components
 5. **MVP-first** - Ship working features incrementally
 
+---
+
 ## Testing
 
-Run unit tests:
 ```bash
+# Run unit tests
 cargo test
+
+# Run with optimizations
+cargo run --release
+
+# Build for production
+cargo build --release
 ```
 
-Run with optimizations:
-```bash
-cargo run --release
-```
+---
 
 ## License
 
