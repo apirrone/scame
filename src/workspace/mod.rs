@@ -6,4 +6,4 @@ pub mod manager;
 pub use buffer::{Buffer, BufferId};
 pub use file_tree::FileTree;
 pub use layout::{LayoutManager, LayoutMode, PaneId, PaneRect};
-pub use manager::Workspace;
+pub use manager::{OpenFileResult, Workspace};

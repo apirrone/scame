@@ -29,6 +29,10 @@ impl FileSearch {
             return Vec::new();
         }
 
+        // Remove spaces from the pattern for more flexible fuzzy matching
+        // This allows "python sdk" to match "python-sdk.md"
+        let normalized_pattern = pattern.replace(' ', "");
+
         let mut results: Vec<FileSearchResult> = file_tree
             .relative_files()
             .into_iter()
@@ -40,10 +44,10 @@ impl FileSearch {
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
 
-                let filename_score = self.matcher.fuzzy_match(filename, pattern);
+                let filename_score = self.matcher.fuzzy_match(filename, &normalized_pattern);
 
                 // Also try matching against the full path (lower priority)
-                let path_score = self.matcher.fuzzy_match(&path_str, pattern);
+                let path_score = self.matcher.fuzzy_match(&path_str, &normalized_pattern);
 
                 // Use the better of the two scores, but heavily prioritize filename matches
                 let base_score = match (filename_score, path_score) {
@@ -110,5 +114,11 @@ mod tests {
         assert!(matcher.fuzzy_match("src/main.rs", "main").is_some());
         assert!(matcher.fuzzy_match("src/main.rs", "sr").is_some());
         assert!(matcher.fuzzy_match("src/main.rs", "srs").is_some());
+
+        // Test space normalization
+        let normalized = "python sdk".replace(' ', "");
+        assert_eq!(normalized, "pythonsdk");
+        assert!(matcher.fuzzy_match("python-sdk.md", &normalized).is_some());
+        assert!(matcher.fuzzy_match("python_sdk.py", &normalized).is_some());
     }
 }

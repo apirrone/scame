@@ -238,7 +238,7 @@ impl App {
 
         // Determine if it's a file or directory
         if path.is_file() {
-            workspace.open_file(path)?;
+            workspace.open_file(path)?; // Result ignored in initialization
         } else if path.is_dir() {
             // Open directory as project
             let mut file_tree = FileTree::new(path.clone());
@@ -1128,7 +1128,8 @@ impl App {
                 // Open selected file in the active pane
                 if let Some(result) = self.file_picker_results.get(self.file_picker_selected) {
                     match self.workspace.open_file(result.path.clone()) {
-                        Ok(buffer_id) => {
+                        Ok(open_result) => {
+                            let buffer_id = open_result.buffer_id();
                             // Set the opened file to the active pane
                             let pane = self.layout.active_pane();
                             self.layout.set_buffer(pane, buffer_id);
@@ -1136,12 +1137,18 @@ impl App {
                             self.mode = AppMode::Normal;
                             self.file_picker_pattern.clear();
                             self.file_picker_results.clear();
-                            // Invalidate highlight cache when opening a new file
-                            self.cached_highlights = None;
-                            self.cached_text_hash = 0;
-                            self.logged_highlighting = false;
-                            // Notify LSP about newly opened file
-                            self.notify_lsp_did_open();
+
+                            // Show message based on whether it's new or existing
+                            if open_result.is_new() {
+                                // Invalidate highlight cache when opening a new file
+                                self.cached_highlights = None;
+                                self.cached_text_hash = 0;
+                                self.logged_highlighting = false;
+                                // Notify LSP about newly opened file
+                                self.notify_lsp_did_open();
+                            } else {
+                                self.message = Some("Switched to existing buffer".to_string());
+                            }
                         }
                         Err(e) => {
                             self.message = Some(format!("Failed to open file: {}", e));
@@ -1285,7 +1292,8 @@ impl App {
 
                     // Open the file
                     match self.workspace.open_file(file_path.clone()) {
-                        Ok(buffer_id) => {
+                        Ok(open_result) => {
+                            let buffer_id = open_result.buffer_id();
                             // Set buffer to active pane
                             let pane = self.layout.active_pane();
                             self.layout.set_buffer(pane, buffer_id);
@@ -1294,7 +1302,8 @@ impl App {
                             if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
                                 buffer.editor_state_mut().cursor.line = line_number;
                                 buffer.editor_state_mut().cursor.column = 0;
-                                buffer.editor_state_mut().viewport.top_line = line_number.saturating_sub(5);
+                                // Center the view on the search result line
+                                buffer.editor_state_mut().viewport.center_on_line(line_number);
                             }
 
                             self.mode = AppMode::Normal;
@@ -1840,7 +1849,8 @@ impl App {
                         // Jump to the line
                         let line_len = text_buffer.line_len(target_line);
                         buffer.editor_state_mut().cursor.move_to(target_line, 0);
-                        buffer.editor_state_mut().ensure_cursor_visible();
+                        // Center the view on the target line after jumping
+                        buffer.editor_state_mut().viewport.center_on_line(target_line);
 
                         self.message = Some(format!("Line {}", target_line + 1));
                     }
@@ -3456,7 +3466,8 @@ impl App {
                                     line: location.position.line,
                                     column: location.position.column,
                                 });
-                                editor_state.ensure_cursor_visible();
+                                // Center the view on the cursor after jumping back
+                                editor_state.viewport.center_on_line(location.position.line);
                                 self.message = Some(format!(
                                     "Jumped back to line {}:{}",
                                     location.position.line + 1,
@@ -3467,7 +3478,8 @@ impl App {
                     } else {
                         // Open the file and jump to the position
                         match self.workspace.open_file(location.path.clone()) {
-                            Ok(buffer_id) => {
+                            Ok(open_result) => {
+                                let buffer_id = open_result.buffer_id();
                                 // Set the buffer in the active pane
                                 let pane = self.layout.active_pane();
                                 self.layout.set_buffer(pane, buffer_id);
@@ -3479,7 +3491,8 @@ impl App {
                                         line: location.position.line,
                                         column: location.position.column,
                                     });
-                                    editor_state.ensure_cursor_visible();
+                                    // Center the view on the cursor after jumping back
+                                    editor_state.viewport.center_on_line(location.position.line);
                                     self.message = Some(format!(
                                         "Jumped back to {} ({}:{})",
                                         location.path.display(),
@@ -4015,7 +4028,8 @@ impl App {
                                 line: location.position.line,
                                 column: location.position.column,
                             });
-                            editor_state.ensure_cursor_visible();
+                            // Center the view on the cursor after jumping
+                            editor_state.viewport.center_on_line(location.position.line);
                             self.message = Some(format!("Jumped to line {}:{}",
                                 location.position.line + 1,
                                 location.position.column + 1));
@@ -4024,7 +4038,8 @@ impl App {
                 } else {
                     // Open file and jump to position
                     match self.workspace.open_file(location.path.clone()) {
-                        Ok(buffer_id) => {
+                        Ok(open_result) => {
+                            let buffer_id = open_result.buffer_id();
                             // Set the buffer in the active pane
                             let pane = self.layout.active_pane();
                             self.layout.set_buffer(pane, buffer_id);
@@ -4036,7 +4051,8 @@ impl App {
                                     line: location.position.line,
                                     column: location.position.column,
                                 });
-                                editor_state.ensure_cursor_visible();
+                                // Center the view on the cursor after jumping
+                                editor_state.viewport.center_on_line(location.position.line);
                                 self.message = Some(format!("Jumped to {}:{}:{}",
                                     location.path.display(),
                                     location.position.line + 1,

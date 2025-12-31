@@ -4,6 +4,27 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Result of opening a file
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFileResult {
+    /// File was newly opened in a new buffer
+    NewBuffer(BufferId),
+    /// File was already open, switched to existing buffer
+    ExistingBuffer(BufferId),
+}
+
+impl OpenFileResult {
+    pub fn buffer_id(&self) -> BufferId {
+        match self {
+            OpenFileResult::NewBuffer(id) | OpenFileResult::ExistingBuffer(id) => *id,
+        }
+    }
+
+    pub fn is_new(&self) -> bool {
+        matches!(self, OpenFileResult::NewBuffer(_))
+    }
+}
+
 /// Manages multiple buffers in the workspace
 pub struct Workspace {
     buffers: HashMap<BufferId, Buffer>,
@@ -39,8 +60,8 @@ impl Workspace {
         id
     }
 
-    /// Open a file in a new buffer
-    pub fn open_file(&mut self, path: PathBuf) -> Result<BufferId> {
+    /// Open a file in a new buffer, or switch to existing buffer if already open
+    pub fn open_file(&mut self, path: PathBuf) -> Result<OpenFileResult> {
         // Check if file is already open
         let existing_id = self.buffers
             .iter()
@@ -49,7 +70,7 @@ impl Workspace {
 
         if let Some(id) = existing_id {
             self.set_active_buffer(id);
-            return Ok(id);
+            return Ok(OpenFileResult::ExistingBuffer(id));
         }
 
         // Create new buffer
@@ -62,7 +83,7 @@ impl Workspace {
         self.buffers.insert(id, buffer);
         self.set_active_buffer(id);
 
-        Ok(id)
+        Ok(OpenFileResult::NewBuffer(id))
     }
 
     /// Get the active buffer
