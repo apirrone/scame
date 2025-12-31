@@ -10,26 +10,84 @@ pub fn language() -> Language {
 /// Get the Python highlighting query
 pub fn query() -> Result<Query, tree_sitter::QueryError> {
     let query_source = r#"
+; Function definitions
 (function_definition
   name: (identifier) @function)
 
+; Function calls
 (call
   function: (identifier) @function)
 
+; Method calls (e.g., obj.method())
+(call
+  function: (attribute
+    attribute: (identifier) @function))
+
+; Class definitions
 (class_definition
   name: (identifier) @type)
 
+; Strings
 (string) @string
 
+; Comments
 (comment) @comment
 
+; Numbers
 (integer) @number
 (float) @number
 
+; Constants
 (true) @constant
 (false) @constant
 (none) @constant
 
+; 'self' parameter (VSCode shows this in blue)
+((identifier) @variable
+  (#eq? @variable "self"))
+
+; 'cls' parameter (for class methods)
+((identifier) @variable
+  (#eq? @variable "cls"))
+
+; Attribute access - the property part (e.g., 'attribute' in self.attribute)
+(attribute
+  attribute: (identifier) @property)
+
+; Import statements - module names in teal/green
+(import_statement
+  name: (dotted_name) @type)
+
+(import_from_statement
+  module_name: (dotted_name) @type)
+
+(aliased_import
+  name: (dotted_name) @type)
+
+; Imported names as variables
+(import_statement
+  name: (dotted_name (identifier) @type))
+
+(import_from_statement
+  name: (dotted_name (identifier) @variable))
+
+; Function parameters
+(parameters
+  (identifier) @parameter)
+
+(typed_parameter
+  (identifier) @parameter)
+
+(default_parameter
+  name: (identifier) @parameter)
+
+(typed_default_parameter
+  name: (identifier) @parameter)
+
+; All other identifiers as variables (this is the catch-all)
+(identifier) @variable
+
+; Keywords
 "def" @keyword
 "class" @keyword
 "if" @keyword
@@ -53,6 +111,15 @@ pub fn query() -> Result<Query, tree_sitter::QueryError> {
 "async" @keyword
 "await" @keyword
 "yield" @keyword
+"in" @keyword
+"is" @keyword
+"not" @keyword
+"and" @keyword
+"or" @keyword
+"assert" @keyword
+"del" @keyword
+"global" @keyword
+"nonlocal" @keyword
     "#;
 
     Query::new(&language(), query_source)
