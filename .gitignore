@@ -1,2 +1,6 @@
 target/
 *~
+
+# Test files
+test_*.py
+test_*.rs

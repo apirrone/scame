@@ -2,6 +2,11 @@
 
 A super-fast terminal-based text editor/IDE written in Rust with AI-powered code completions, LSP support, and syntax highlighting.
 
+## What is this ?
+
+This editor is for me, it's not meant to be easily customizable or extensible, it just contains the features I need, bound to keybinings I'm used to (a weird mix of emacs and vscode).
+
+
 ## Quick Start
 
 ### Installation
