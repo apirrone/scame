@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 /// Session state for a project
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     /// List of open file paths
     pub open_files: Vec<PathBuf>,
@@ -31,9 +31,12 @@ impl SessionState {
         let cache_dir = PathBuf::from(home).join(".cache/scame");
         std::fs::create_dir_all(&cache_dir)?;
 
-        // Generate hash from project path
+        // Canonicalize the path to avoid issues with relative paths, symlinks, etc.
+        let canonical_root = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
+
+        // Generate hash from canonical project path
         let mut hasher = DefaultHasher::new();
-        project_root.hash(&mut hasher);
+        canonical_root.hash(&mut hasher);
         let hash = hasher.finish();
 
         let session_file = cache_dir.join(format!("session_{:x}.json", hash));
@@ -42,8 +45,14 @@ impl SessionState {
 
     /// Save session state to disk
     pub fn save(&self) -> Result<()> {
-        let session_file = Self::session_file_path(&self.project_root)?;
-        let json = serde_json::to_string_pretty(self)?;
+        // Canonicalize the project root before saving to ensure consistency
+        let canonical_root = self.project_root.canonicalize().unwrap_or_else(|_| self.project_root.clone());
+
+        let mut state = self.clone();
+        state.project_root = canonical_root;
+
+        let session_file = Self::session_file_path(&state.project_root)?;
+        let json = serde_json::to_string_pretty(&state)?;
         std::fs::write(session_file, json)?;
         Ok(())
     }
@@ -59,10 +68,31 @@ impl SessionState {
         let json = std::fs::read_to_string(session_file)?;
         let state: SessionState = serde_json::from_str(&json)?;
 
-        // Verify files still exist
+        // Canonicalize both the requested and stored project roots
+        let canonical_requested = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
+        let canonical_stored = state.project_root.canonicalize().unwrap_or_else(|_| state.project_root.clone());
+
+        // Verify the session is for the correct project
+        if canonical_requested != canonical_stored {
+            // Session is for a different project, don't load it
+            return Ok(None);
+        }
+
+        // Verify files still exist and are within the project directory
         let mut valid_files = Vec::new();
         for file in &state.open_files {
-            if file.exists() {
+            if !file.exists() {
+                continue;
+            }
+
+            // Canonicalize the file path to resolve symlinks, relative paths, etc.
+            let canonical_file = match file.canonicalize() {
+                Ok(p) => p,
+                Err(_) => continue, // Skip files that can't be canonicalized
+            };
+
+            // Only include files that are within the project directory
+            if canonical_file.starts_with(&canonical_requested) {
                 valid_files.push(file.clone());
             }
         }

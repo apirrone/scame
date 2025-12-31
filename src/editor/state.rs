@@ -146,9 +146,12 @@ impl Viewport {
         self.top_line = self.top_line.saturating_sub(n);
     }
 
-    /// Scroll down by n lines
-    pub fn scroll_down(&mut self, n: usize) {
-        self.top_line += n;
+    /// Scroll down by n lines (clamped to reasonable bounds)
+    pub fn scroll_down(&mut self, n: usize, max_lines: usize) {
+        // Allow scrolling slightly past the last line for better UX,
+        // but not infinitely
+        let max_top_line = max_lines.saturating_sub(1);
+        self.top_line = (self.top_line + n).min(max_top_line);
     }
 
     /// Resize the viewport

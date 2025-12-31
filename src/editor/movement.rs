@@ -99,10 +99,11 @@ impl Movement {
     /// Page down
     pub fn page_down(state: &mut EditorState, buffer: &TextBuffer) {
         let page_size = state.viewport.height as usize;
-        let new_line = (state.cursor.line + page_size).min(buffer.len_lines().saturating_sub(1));
+        let max_lines = buffer.len_lines();
+        let new_line = (state.cursor.line + page_size).min(max_lines.saturating_sub(1));
         let line_len = buffer.line_len(new_line);
         state.cursor.move_vertical(new_line, line_len);
-        state.viewport.scroll_down(page_size);
+        state.viewport.scroll_down(page_size, max_lines);
     }
 
     /// Helper: check if character is a word boundary

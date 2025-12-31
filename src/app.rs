@@ -1375,6 +1375,27 @@ impl App {
         // Search through all files in the project
         if let Some(file_tree) = &self.file_tree {
             for file_path in file_tree.files() {
+                // Skip binary and large files
+                if let Ok(metadata) = std::fs::metadata(file_path) {
+                    // Skip files larger than 10MB to avoid slowdown
+                    if metadata.len() > 10_000_000 {
+                        continue;
+                    }
+                }
+
+                // Skip common binary file extensions
+                if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                    match ext {
+                        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "svg" |
+                        "pdf" | "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" |
+                        "exe" | "dll" | "so" | "dylib" | "a" | "o" |
+                        "woff" | "woff2" | "ttf" | "eot" |
+                        "mp3" | "mp4" | "avi" | "mov" | "wav" |
+                        "pyc" | "pyo" | "class" | "jar" => continue,
+                        _ => {}
+                    }
+                }
+
                 // Read file contents
                 if let Ok(contents) = std::fs::read_to_string(file_path) {
                     // Search each line

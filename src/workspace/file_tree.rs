@@ -38,8 +38,30 @@ impl FileTree {
         {
             match result {
                 Ok(entry) => {
+                    let path = entry.path();
+
+                    // Skip .git directory and other common non-code directories
+                    let path_str = path.to_string_lossy();
+                    if path_str.contains("/.git/")
+                        || path_str.contains("\\.git\\")
+                        || path_str.ends_with("/.git")
+                        || path_str.ends_with("\\.git")
+                        || path_str.contains("/node_modules/")
+                        || path_str.contains("\\node_modules\\")
+                        || path_str.contains("/.venv/")
+                        || path_str.contains("\\.venv\\")
+                        || path_str.contains("/__pycache__/")
+                        || path_str.contains("\\__pycache__\\")
+                        || path_str.contains("/target/debug/")
+                        || path_str.contains("/target/release/")
+                        || path_str.contains("\\target\\debug\\")
+                        || path_str.contains("\\target\\release\\")
+                    {
+                        continue;
+                    }
+
                     if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                        self.files.push(entry.path().to_path_buf());
+                        self.files.push(path.to_path_buf());
                     }
                 }
                 Err(_) => continue, // Skip errors (permission denied, etc.)
