@@ -17,6 +17,7 @@ mod syntax;
 mod workspace;
 
 use app::{poll_event, App, ControlFlow};
+use crossterm::event::Event;
 use render::Terminal;
 use std::env;
 use std::path::PathBuf;
@@ -53,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     app.initialize_ai()?;
 
     // Initialize terminal
-    let terminal = Terminal::new()?;
+    let mut terminal = Terminal::new()?;
 
     // Initial render
     app.render(&terminal)?;
@@ -76,6 +77,11 @@ fn main() -> anyhow::Result<()> {
 
         // Handle input - wait for events (no timeout = blocks until event)
         if let Some(event) = poll_event(Duration::from_millis(100))? {
+            // Handle resize events specially to update terminal dimensions
+            if let crossterm::event::Event::Resize(_width, _height) = event {
+                terminal.resize()?;
+            }
+
             match app.handle_event(event)? {
                 ControlFlow::Continue => {
                     // Render after handling input

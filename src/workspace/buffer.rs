@@ -130,6 +130,8 @@ impl Buffer {
     /// Resize the viewport
     pub fn resize(&mut self, width: u16, height: u16) {
         self.editor_state.viewport.resize(width, height);
+        // Ensure cursor remains visible after resize
+        self.editor_state.ensure_cursor_visible();
     }
 
     /// Get mutable references to both text buffer and editor state
