@@ -3202,6 +3202,12 @@ impl App {
                     let end = Position::new(line, line_len);
                     if let Ok(deleted) = text_buffer.delete_range(start, end) {
                         self.clipboard = deleted.clone();
+
+                        // Also copy to system clipboard
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&deleted);
+                        }
+
                         undo_manager.record(Change::Delete {
                             pos: start,
                             text: deleted,
@@ -3212,10 +3218,17 @@ impl App {
                     // At end of line, delete the newline
                     let pos = Position::new(line, line_len);
                     if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
-                        self.clipboard = ch.to_string();
+                        let ch_str = ch.to_string();
+                        self.clipboard = ch_str.clone();
+
+                        // Also copy to system clipboard
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&ch_str);
+                        }
+
                         undo_manager.record(Change::Delete {
                             pos,
-                            text: ch.to_string(),
+                            text: ch_str,
                         });
                     }
                 }
@@ -3230,9 +3243,24 @@ impl App {
 
                     if start_idx < end_idx {
                         let text = buffer.text_buffer().to_string();
-                        let selected = text.chars().skip(start_idx).take(end_idx - start_idx).collect();
-                        self.clipboard = selected;
-                        self.message = Some("Copied to clipboard".to_string());
+                        let selected: String = text.chars().skip(start_idx).take(end_idx - start_idx).collect();
+
+                        // Copy to both internal and system clipboard
+                        self.clipboard = selected.clone();
+
+                        // Try to copy to system clipboard
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => {
+                                if let Err(e) = clipboard.set_text(&selected) {
+                                    self.message = Some(format!("Copied (system clipboard failed: {})", e));
+                                } else {
+                                    self.message = Some("Copied to clipboard".to_string());
+                                }
+                            }
+                            Err(e) => {
+                                self.message = Some(format!("Copied (system clipboard unavailable: {})", e));
+                            }
+                        }
                     }
                 } else {
                     self.message = Some("No selection".to_string());
@@ -3241,17 +3269,31 @@ impl App {
 
             // Ctrl+V - Paste from clipboard
             (KeyCode::Char('v'), KeyModifiers::CONTROL) => {
-                if !self.clipboard.is_empty() {
+                // Try to get text from system clipboard first, fall back to internal
+                let clipboard_text = match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        clipboard.get_text().ok()
+                    }
+                    Err(_) => None
+                }.or_else(|| {
+                    if !self.clipboard.is_empty() {
+                        Some(self.clipboard.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(text) = clipboard_text {
                     let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
                     let pos = editor_state.cursor.position();
-                    text_buffer.insert(pos, &self.clipboard)?;
+                    text_buffer.insert(pos, &text)?;
                     undo_manager.record(Change::Insert {
                         pos,
-                        text: self.clipboard.clone(),
+                        text: text.clone(),
                     });
 
                     // Move cursor to end of pasted text
-                    let char_idx = text_buffer.pos_to_char(pos)? + self.clipboard.len();
+                    let char_idx = text_buffer.pos_to_char(pos)? + text.len();
                     editor_state.cursor.set_position(text_buffer.char_to_pos(char_idx));
                     editor_state.ensure_cursor_visible();
                     self.message = Some("Pasted from clipboard".to_string());
