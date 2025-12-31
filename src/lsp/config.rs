@@ -14,7 +14,7 @@ impl Language {
             .and_then(|ext| ext.to_str())
             .and_then(|ext| match ext {
                 "rs" => Some(Language::Rust),
-                "py" => Some(Language::Python),
+                "py" | "pyw" | "pyi" => Some(Language::Python),
                 _ => None,
             })
     }

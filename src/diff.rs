@@ -77,7 +77,7 @@ impl DiffView {
 
     /// Check if syntax highlighting is supported for this file type
     pub fn supports_syntax_highlighting(&self) -> bool {
-        matches!(self.file_extension(), Some("py") | Some("rs"))
+        matches!(self.file_extension(), Some("py") | Some("pyw") | Some("pyi") | Some("rs"))
     }
 
     /// Compute the diff between two strings and return paired lines

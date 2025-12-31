@@ -29,7 +29,7 @@ impl SupportedLanguage {
         path.extension()
             .and_then(|ext| ext.to_str())
             .and_then(|ext| match ext {
-                "py" | "pyw" => Some(Self::Python),
+                "py" | "pyw" | "pyi" => Some(Self::Python),
                 "rs" => Some(Self::Rust),
                 "json" => Some(Self::Json),
                 "md" | "markdown" => Some(Self::Markdown),
