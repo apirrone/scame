@@ -28,7 +28,7 @@ impl FileTree {
         // - .git/info/exclude
         // - global gitignore
         for result in WalkBuilder::new(&self.root)
-            .hidden(true)         // Include hidden files (but respect .gitignore)
+            .hidden(false)        // Include hidden files (false = don't filter them out)
             .git_ignore(true)     // Respect .gitignore files
             .git_global(true)     // Respect global gitignore
             .git_exclude(true)    // Respect .git/info/exclude
