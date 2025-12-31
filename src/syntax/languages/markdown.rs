@@ -9,28 +9,13 @@ pub fn language() -> Language {
 
 /// Get the Markdown highlighting query
 pub fn query() -> Result<Query, tree_sitter::QueryError> {
+    // Very minimal query to avoid version-specific node types
+    // tree-sitter-md has different node types across versions
+    // If this fails, syntax highlighting will be disabled for markdown (gracefully)
     let query_source = r#"
-; Headings
-(atx_heading) @keyword
-
-; Emphasis
-(emphasis) @emphasis
-(strong_emphasis) @strong
-
-; Code
+; Basic code highlighting (most stable across versions)
 (code_span) @string
 (fenced_code_block) @string
-(indented_code_block) @string
-
-; Links
-(link) @function
-(image) @function
-
-; Lists
-(list_marker) @keyword
-
-; Inline code
-(code_fence_content) @string
     "#;
 
     Query::new(&language(), query_source)
@@ -44,8 +29,6 @@ pub fn capture_names() -> Result<HashMap<usize, TokenType>, tree_sitter::QueryEr
     for (i, name) in query.capture_names().iter().enumerate() {
         let token_type = match name.as_ref() {
             "keyword" => TokenType::Keyword,
-            "emphasis" => TokenType::String,
-            "strong" => TokenType::Keyword,
             "string" => TokenType::String,
             "function" => TokenType::Function,
             _ => continue,

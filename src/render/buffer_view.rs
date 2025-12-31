@@ -286,7 +286,15 @@ impl BufferView {
         }
 
         // Render with syntax highlighting
-        let spans = highlight_spans.unwrap();
+        // This should always be Some() due to the check above, but be defensive
+        let spans = match highlight_spans {
+            Some(s) => s,
+            None => {
+                // Fallback to simple rendering if highlighting somehow failed
+                terminal.print(line)?;
+                return Ok(());
+            }
+        };
 
         // Filter spans that overlap with this line
         let line_spans: Vec<_> = spans
