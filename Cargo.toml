@@ -39,6 +39,9 @@ ignore = "0.4"  # Gitignore support (replaces walkdir)
 # Clipboard support
 arboard = "3.3"
 
+# Diff support
+similar = "2.3"
+
 # Configuration & serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
