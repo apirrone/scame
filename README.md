@@ -49,12 +49,13 @@ scame --version
 ```
 
 **Essential Shortcuts:**
-- `Ctrl+S` - Save file
-- `Ctrl+Q` - Quit
+- `Ctrl+x Ctrl+s` - Save file
+- `Ctrl+x Ctrl+c` - Quit
+- `Ctrl+s` - Search
 - `Ctrl+P` - File picker (fuzzy search)
 - `Ctrl+Space` - Auto-completion (LSP)
 - `Tab` - Accept AI suggestion
-- `Ctrl+Shift+P` - Command palette
+- `Ctrl+x Ctrl+p` - Command palette
 
 ---
 
