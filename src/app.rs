@@ -73,6 +73,7 @@ pub enum CommandAction {
     ToggleSmartIndentation,
     ToggleDiagnostics,
     ToggleAiCompletions,
+    ToggleIndentGuides,
 }
 
 pub struct App {
@@ -88,6 +89,7 @@ pub struct App {
     enable_syntax_highlighting: bool,
     smart_indentation: bool,
     show_diagnostics: bool,
+    show_indent_guides: bool,
     clipboard: String,
     // Emacs-style key chord state
     waiting_for_second_key: bool,
@@ -187,6 +189,7 @@ impl App {
             enable_syntax_highlighting: true,
             smart_indentation: true,
             show_diagnostics: true,
+            show_indent_guides: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -279,6 +282,7 @@ impl App {
                 enable_syntax_highlighting: true,
                 smart_indentation: true,
                 show_diagnostics: true,
+                show_indent_guides: true,
                 clipboard: String::new(),
                 waiting_for_second_key: false,
                 file_picker_pattern: String::new(),
@@ -345,6 +349,7 @@ impl App {
             enable_syntax_highlighting: true,
             smart_indentation: true,
             show_diagnostics: true,
+            show_indent_guides: true,
             clipboard: String::new(),
             waiting_for_second_key: false,
             file_picker_pattern: String::new(),
@@ -492,6 +497,13 @@ impl App {
                 description: "Enable/disable AI-powered code completions".to_string(),
                 keybinding: None,
                 action: CommandAction::ToggleAiCompletions,
+            },
+            Command {
+                name: format!("Toggle Indent Guides [{}]",
+                    if self.show_indent_guides { "ON" } else { "OFF" }),
+                description: "Enable/disable indentation guide lines (Python)".to_string(),
+                keybinding: None,
+                action: CommandAction::ToggleIndentGuides,
             },
         ]
     }
@@ -711,6 +723,8 @@ impl App {
                 buffer_diagnostics,
                 self.show_diagnostics,
                 self.ai_suggestion.as_ref(),
+                buffer.file_path().map(|p| p.as_path()),
+                self.show_indent_guides,
             )?;
             StatusBar::render(
                 terminal,
@@ -1666,6 +1680,10 @@ impl App {
                     self.ai_pending_request = false;
                 }
                 self.message = Some(format!("AI completions: {}", if self.ai_completions_enabled { "ON" } else { "OFF" }));
+            }
+            CommandAction::ToggleIndentGuides => {
+                self.show_indent_guides = !self.show_indent_guides;
+                self.message = Some(format!("Indent guides: {}", if self.show_indent_guides { "ON" } else { "OFF" }));
             }
         }
         Ok(ControlFlow::Continue)

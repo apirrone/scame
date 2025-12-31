@@ -5,6 +5,7 @@ use crate::render::terminal::Terminal;
 use crate::syntax::{HighlightSpan, Theme};
 use anyhow::Result;
 use crossterm::style::Color;
+use std::path::Path;
 
 pub struct BufferView;
 
@@ -20,6 +21,8 @@ impl BufferView {
         diagnostics: Option<&[Diagnostic]>,
         show_diagnostics: bool,
         ai_suggestion: Option<&String>,
+        file_path: Option<&Path>,
+        show_indent_guides: bool,
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -37,6 +40,22 @@ impl BufferView {
 
         // Parse AI suggestion into lines if present
         let ai_suggestion_lines: Option<Vec<&str>> = ai_suggestion.map(|s| s.lines().collect());
+
+        // Check if we should show indentation guides (enabled AND Python files only)
+        let show_indent_guides = show_indent_guides
+            && file_path
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .map(|e| e == "py")
+                .unwrap_or(false);
+
+        // Pre-calculate indentation levels for all visible lines (including empty lines)
+        // Empty lines inherit indentation from the next non-empty line
+        let indent_levels: Vec<usize> = if show_indent_guides {
+            Self::calculate_indent_levels_for_viewport(buffer, state, content_height)
+        } else {
+            vec![0; content_height as usize]
+        };
 
         // Render each visible line
         for screen_row in 0..content_height {
@@ -129,8 +148,11 @@ impl BufferView {
 
                 let show_ai_on_cursor_line = buffer_line == state.cursor.line;
 
+                // Get pre-calculated indentation level for this line
+                let indent_level = indent_levels.get(screen_row as usize).copied().unwrap_or(0);
+
                 // Render the line with selection highlighting if applicable
-                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line)?;
+                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line, show_indent_guides, indent_level)?;
             }
         }
 
@@ -164,6 +186,8 @@ impl BufferView {
         theme: &Theme,
         ai_line_to_show: Option<&str>,
         show_ai_on_cursor_line: bool,
+        show_indent_guides: bool,
+        indent_level: usize,
     ) -> Result<()> {
         // Calculate byte offset for this line in the buffer
         let line_start_byte = buffer.line_to_byte(line_num);
@@ -187,6 +211,26 @@ impl BufferView {
         let selection_bg = Color::Rgb { r: 100, g: 180, b: 255 }; // Bright blue
         let selection_fg = Color::Black;
 
+        // Guide color for indentation guides
+        let guide_color = Color::Rgb { r: 60, g: 60, b: 60 };
+
+        // Handle empty lines with indentation guides
+        if show_indent_guides && indent_level > 0 && line.trim().is_empty() {
+            // Render only the indentation guides for empty lines
+            for level in 0..indent_level {
+                if level > 0 {
+                    // Print spaces between guides
+                    for _ in 0..3 {
+                        terminal.print(" ")?;
+                    }
+                }
+                terminal.set_fg(guide_color)?;
+                terminal.print("│")?;
+                terminal.reset_color()?;
+            }
+            return Ok(());
+        }
+
         // If no syntax highlighting, use simple rendering
         if highlight_spans.is_none() {
             if let Some((start_col, end_col)) = selection_range {
@@ -195,17 +239,48 @@ impl BufferView {
                 let chars: Vec<char> = line.chars().collect();
 
                 for (col_idx, &ch) in chars.iter().enumerate() {
+                    // Check if this is a guide position
+                    let is_guide_pos = show_indent_guides
+                        && ch == ' '
+                        && col_idx < indent_level * 4
+                        && col_idx % 4 == 0;
+
                     if col_idx >= start_col && col_idx < end_col {
                         terminal.set_bg(selection_bg)?;
                         terminal.set_fg(selection_fg)?;
-                        terminal.print(&ch.to_string())?;
+                        if is_guide_pos {
+                            terminal.print("│")?;
+                        } else {
+                            terminal.print(&ch.to_string())?;
+                        }
                         terminal.reset_color()?;
                     } else {
-                        terminal.print(&ch.to_string())?;
+                        if is_guide_pos {
+                            terminal.set_fg(guide_color)?;
+                            terminal.print("│")?;
+                            terminal.reset_color()?;
+                        } else {
+                            terminal.print(&ch.to_string())?;
+                        }
                     }
                 }
             } else {
-                terminal.print(line)?;
+                // Simple case without selection - but need to handle guides
+                if show_indent_guides && indent_level > 0 {
+                    let chars: Vec<char> = line.chars().collect();
+                    for (col_idx, &ch) in chars.iter().enumerate() {
+                        let is_guide_pos = ch == ' ' && col_idx < indent_level * 4 && col_idx % 4 == 0;
+                        if is_guide_pos {
+                            terminal.set_fg(guide_color)?;
+                            terminal.print("│")?;
+                            terminal.reset_color()?;
+                        } else {
+                            terminal.print(&ch.to_string())?;
+                        }
+                    }
+                } else {
+                    terminal.print(line)?;
+                }
             }
             return Ok(());
         }
@@ -266,17 +341,32 @@ impl BufferView {
             } else {
                 // Non-selected character - just print with syntax color if available
                 let ch = chars[col_idx];
-                let token_color = line_spans
-                    .iter()
-                    .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
-                    .map(|span| theme.color_for(span.token_type));
 
-                if let Some(color) = token_color {
-                    terminal.set_fg(color)?;
-                    terminal.print(&ch.to_string())?;
+                // Check if this is an indentation guide position
+                let is_guide_pos = show_indent_guides
+                    && ch == ' '
+                    && col_idx < indent_level * 4
+                    && col_idx % 4 == 0;
+
+                if is_guide_pos {
+                    // Render indentation guide
+                    terminal.set_fg(guide_color)?;
+                    terminal.print("│")?;
                     terminal.reset_color()?;
                 } else {
-                    terminal.print(&ch.to_string())?;
+                    // Render normal character with syntax highlighting
+                    let token_color = line_spans
+                        .iter()
+                        .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
+                        .map(|span| theme.color_for(span.token_type));
+
+                    if let Some(color) = token_color {
+                        terminal.set_fg(color)?;
+                        terminal.print(&ch.to_string())?;
+                        terminal.reset_color()?;
+                    } else {
+                        terminal.print(&ch.to_string())?;
+                    }
                 }
 
                 char_idx += ch.len_utf8();
@@ -334,5 +424,58 @@ impl BufferView {
             (line_count as f64).log10().floor() as u16 + 1
         };
         digits.max(3) // Minimum width of 3
+    }
+
+    /// Calculate indentation level (number of 4-space indents)
+    fn calculate_indent_level(line: &str) -> usize {
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        leading_spaces / 4 // Python uses 4 spaces per indent level
+    }
+
+    /// Calculate indentation levels for all lines in the viewport
+    /// Empty lines inherit indentation from the next non-empty line
+    fn calculate_indent_levels_for_viewport(
+        buffer: &TextBuffer,
+        state: &EditorState,
+        content_height: u16,
+    ) -> Vec<usize> {
+        let mut levels = Vec::with_capacity(content_height as usize);
+
+        for screen_row in 0..content_height {
+            let buffer_line = state.viewport.top_line + screen_row as usize;
+
+            if buffer_line >= buffer.len_lines() {
+                // Beyond buffer - no indentation
+                levels.push(0);
+                continue;
+            }
+
+            if let Some(line) = buffer.get_line(buffer_line) {
+                let line = line.trim_end_matches(&['\n', '\r'][..]);
+
+                // Check if line is empty or whitespace-only
+                if line.trim().is_empty() {
+                    // Look forward to find the next non-empty line's indentation
+                    let mut next_indent = 0;
+                    for look_ahead in (buffer_line + 1)..buffer.len_lines() {
+                        if let Some(next_line) = buffer.get_line(look_ahead) {
+                            let next_line = next_line.trim_end_matches(&['\n', '\r'][..]);
+                            if !next_line.trim().is_empty() {
+                                next_indent = Self::calculate_indent_level(next_line);
+                                break;
+                            }
+                        }
+                    }
+                    levels.push(next_indent);
+                } else {
+                    // Non-empty line - calculate its indentation
+                    levels.push(Self::calculate_indent_level(line));
+                }
+            } else {
+                levels.push(0);
+            }
+        }
+
+        levels
     }
 }
