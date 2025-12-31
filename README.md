@@ -172,7 +172,54 @@ A super-fast terminal-based text editor/IDE written in Rust with minimal depende
 - ✅ **Prompt caching** - Fast responses with Claude's ephemeral cache (90% latency reduction)
 - ✅ **Non-blocking** - All API calls run asynchronously, maintains 60 FPS
 
-## Building and Running
+**Diff Viewer:**
+- ✅ **Side-by-side diff** - GitHub PR-style diff viewer with syntax highlighting
+- ✅ **Command:** `scame --diff file1.py file2.py`
+- ✅ **Navigation:** Arrow keys, j/k, PgUp/PgDn to scroll, q to quit
+- ✅ **Syntax highlighting** - Supports Python and Rust files
+
+## Installation
+
+### Quick Install (Recommended)
+
+Install with a single command:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/apirrone/scame/main/install.sh | sh
+```
+
+This will automatically:
+- Detect your platform (x86_64, ARM64, or ARMv7)
+- Download the latest release binary
+- Install to `/usr/local/bin` or `~/.local/bin`
+- Make it executable and ready to use
+
+### Supported Platforms
+
+- **Linux x86_64** - Standard Linux on Intel/AMD 64-bit processors
+- **Linux ARM64** - Raspberry Pi 4/5 (64-bit), Apple Silicon Linux VMs
+- **Linux ARMv7** - Raspberry Pi 2/3/4 (32-bit)
+
+### Manual Installation
+
+Download the appropriate binary from the [latest release](https://github.com/apirrone/scame/releases/latest):
+
+```bash
+# Download for your platform
+wget https://github.com/apirrone/scame/releases/latest/download/scame-linux-x86_64.tar.gz
+
+# Extract
+tar xzf scame-linux-x86_64.tar.gz
+
+# Move to PATH
+sudo mv scame-linux-x86_64 /usr/local/bin/scame
+sudo chmod +x /usr/local/bin/scame
+
+# Verify installation
+scame --version
+```
+
+## Building from Source
 
 ```bash
 # Build in release mode (optimized)

@@ -33,6 +33,12 @@ fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 
+    // Check for --version flag
+    if args.len() > 1 && (args[1] == "--version" || args[1] == "-v") {
+        println!("scame {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Check for --diff flag
     if args.len() > 1 && args[1] == "--diff" {
         if args.len() < 4 {
