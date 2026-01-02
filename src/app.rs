@@ -3052,6 +3052,100 @@ impl App {
                 self.message = Some("Go to line:".to_string());
             }
 
+            // Alt+; - Toggle comment on line or selection
+            (KeyCode::Char(';'), KeyModifiers::ALT) => {
+                let buffer = self.workspace.active_buffer_mut().unwrap();
+
+                // Determine comment syntax based on file extension
+                let comment_prefix = if let Some(path) = buffer.file_path() {
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        match ext {
+                            "py" | "pyi" | "pyw" => "# ",
+                            "rs" => "// ",
+                            "js" | "jsx" | "ts" | "tsx" | "c" | "cpp" | "h" | "hpp" | "java" | "go" => "// ",
+                            "sh" | "bash" | "zsh" => "# ",
+                            "html" | "xml" => "<!-- ",
+                            "css" | "scss" => "/* ",
+                            _ => "# ", // Default to # for unknown types
+                        }
+                    } else {
+                        "# "
+                    }
+                } else {
+                    "# "
+                };
+
+                let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+                // Determine which lines to comment
+                let (start_line, end_line) = if let Some(selection) = editor_state.selection {
+                    let (start_pos, end_pos) = selection.range();
+                    (start_pos.line, end_pos.line)
+                } else {
+                    // No selection, just comment current line
+                    (editor_state.cursor.line, editor_state.cursor.line)
+                };
+
+                // Check if lines are already commented
+                let mut all_commented = true;
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = text_buffer.get_line(line_idx) {
+                        let trimmed = line.trim_start();
+                        if !trimmed.starts_with(comment_prefix.trim()) {
+                            all_commented = false;
+                            break;
+                        }
+                    }
+                }
+
+                // Toggle comments (in reverse order to maintain positions)
+                let mut changes = Vec::new();
+                for line_idx in (start_line..=end_line).rev() {
+                    if let Some(line) = text_buffer.get_line(line_idx) {
+                        if all_commented {
+                            // Remove comment
+                            let trimmed = line.trim_start();
+                            if trimmed.starts_with(comment_prefix.trim()) {
+                                let indent_len = line.len() - trimmed.len();
+                                let comment_start_pos = crate::buffer::Position::new(line_idx, indent_len);
+                                let comment_end_pos = crate::buffer::Position::new(line_idx, indent_len + comment_prefix.len());
+
+                                if let Ok(deleted) = text_buffer.delete_range(comment_start_pos, comment_end_pos) {
+                                    changes.push(crate::buffer::Change::Delete {
+                                        pos: comment_start_pos,
+                                        text: deleted,
+                                    });
+                                }
+                            }
+                        } else {
+                            // Add comment
+                            let indent_len = line.len() - line.trim_start().len();
+                            let insert_pos = crate::buffer::Position::new(line_idx, indent_len);
+
+                            text_buffer.insert(insert_pos, comment_prefix)?;
+                            changes.push(crate::buffer::Change::Insert {
+                                pos: insert_pos,
+                                text: comment_prefix.to_string(),
+                            });
+                        }
+                    }
+                }
+
+                // Reverse changes back to forward order for undo
+                changes.reverse();
+
+                // Record all changes as a compound change for undo
+                if !changes.is_empty() {
+                    undo_manager.record(crate::buffer::Change::Compound(changes));
+                    let action = if all_commented { "Uncommented" } else { "Commented" };
+                    let line_count = end_line - start_line + 1;
+                    self.message = Some(format!("{} {} line(s)", action, line_count));
+                }
+
+                // Clear selection after commenting
+                editor_state.clear_selection();
+            }
+
             // Ctrl+Backspace - Delete word before cursor
             // Also handle Ctrl+H since many terminals send this for Ctrl+Backspace
             (KeyCode::Backspace, KeyModifiers::CONTROL) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
