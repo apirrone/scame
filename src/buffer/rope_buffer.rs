@@ -87,9 +87,13 @@ impl TextBuffer {
     pub fn save(&mut self) -> Result<()> {
         if let Some(path) = &self.file_path {
             let content = self.rope.to_string();
-            std::fs::write(path, content)?;
-            self.modified = false;
-            Ok(())
+            match std::fs::write(path, content) {
+                Ok(_) => {
+                    self.modified = false;
+                    Ok(())
+                }
+                Err(e) => Err(anyhow::Error::new(e))
+            }
         } else {
             anyhow::bail!("No file path set for buffer")
         }
@@ -277,6 +281,11 @@ impl TextBuffer {
     /// Set the file path
     pub fn set_file_path(&mut self, path: PathBuf) {
         self.file_path = Some(path);
+    }
+
+    /// Manually set the modified flag (used after sudo save)
+    pub fn set_modified(&mut self, modified: bool) {
+        self.modified = modified;
     }
 
     /// Get the line ending type

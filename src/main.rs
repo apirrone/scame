@@ -114,6 +114,11 @@ fn main() -> anyhow::Result<()> {
 
             match app.handle_event(event)? {
                 ControlFlow::Continue => {
+                    // Execute sudo save if needed
+                    if app.needs_sudo_save() {
+                        app.execute_sudo_save(&terminal)?;
+                    }
+
                     // Render after handling input
                     app.render(&terminal)?;
                 }

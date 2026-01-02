@@ -29,6 +29,7 @@ pub enum AppMode {
     ProjectSearch,      // Project-wide search (Ctrl+X Ctrl+F)
     ConfirmExit,
     ConfirmCloseTab,    // Confirming close of modified buffer
+    ConfirmSudoSave,    // Confirming sudo save operation
     Search,
     JumpToLine,
     ReplacePrompt,      // Prompting for search pattern
@@ -144,6 +145,10 @@ pub struct App {
     project_search_scroll_offset: usize,
     // Pending close buffer (for ConfirmCloseTab mode)
     pending_close_buffer_id: Option<crate::workspace::BufferId>,
+    // Sudo save state
+    pending_sudo_save_path: Option<PathBuf>,
+    pending_sudo_save_content: Option<String>,
+    execute_sudo_save_on_render: bool,
 }
 
 impl App {
@@ -226,6 +231,9 @@ impl App {
             project_search_selected: 0,
             project_search_scroll_offset: 0,
             pending_close_buffer_id: None,
+            pending_sudo_save_path: None,
+            pending_sudo_save_content: None,
+            execute_sudo_save_on_render: false,
         })
     }
 
@@ -323,6 +331,9 @@ impl App {
                 project_search_selected: 0,
                 project_search_scroll_offset: 0,
                 pending_close_buffer_id: None,
+                pending_sudo_save_path: None,
+                pending_sudo_save_content: None,
+                execute_sudo_save_on_render: false,
             });
         }
 
@@ -386,6 +397,9 @@ impl App {
             project_search_selected: 0,
             project_search_scroll_offset: 0,
             pending_close_buffer_id: None,
+            pending_sudo_save_path: None,
+            pending_sudo_save_content: None,
+            execute_sudo_save_on_render: false,
         })
     }
 
@@ -1100,6 +1114,7 @@ impl App {
             AppMode::ProjectSearch => self.handle_project_search_mode(key),
             AppMode::ConfirmExit => self.handle_confirm_exit_mode(key),
             AppMode::ConfirmCloseTab => self.handle_confirm_close_tab_mode(key),
+            AppMode::ConfirmSudoSave => self.handle_confirm_sudo_save_mode(key),
             AppMode::Search => self.handle_search_mode(key),
             AppMode::JumpToLine => self.handle_jump_to_line_mode(key),
             AppMode::ReplacePrompt => self.handle_replace_prompt_mode(key),
@@ -1487,11 +1502,31 @@ impl App {
                 // Save current buffer
                 if let Some(buffer_id) = self.layout.active_buffer() {
                     if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
-                        if let Some(path) = buffer.file_path() {
-                            self.backup_manager.create_backup(path)?;
-                            buffer.text_buffer_mut().save()?;
-                            self.message = Some("Saved".to_string());
-                            self.notify_lsp_did_save();
+                        if let Some(path) = buffer.file_path().cloned() {
+                            // Try to create backup (ignore errors - backup is optional)
+                            let _ = self.backup_manager.create_backup(&path);
+
+                            // Store content before attempting save (for sudo retry)
+                            let content = buffer.text_buffer().to_string();
+
+                            match buffer.text_buffer_mut().save() {
+                                Ok(_) => {
+                                    self.message = Some("Saved".to_string());
+                                    self.notify_lsp_did_save();
+                                }
+                                Err(e) => {
+                                    if self.is_permission_denied(&e) {
+                                        self.pending_sudo_save_path = Some(path);
+                                        self.pending_sudo_save_content = Some(content);
+                                        self.mode = AppMode::ConfirmSudoSave;
+                                        self.message = Some(
+                                            "Permission denied. Save with sudo? (y/n)".to_string()
+                                        );
+                                    } else {
+                                        self.message = Some(format!("Save failed: {}", e));
+                                    }
+                                }
+                            }
                         } else {
                             self.message = Some("Buffer has no file path".to_string());
                         }
@@ -1605,8 +1640,12 @@ impl App {
                             // Save file first if modified
                             if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
                                 if buffer_mut.text_buffer().is_modified() {
-                                    self.backup_manager.create_backup(&path)?;
-                                    buffer_mut.text_buffer_mut().save()?;
+                                    let _ = self.backup_manager.create_backup(&path);
+
+                                    if let Err(e) = buffer_mut.text_buffer_mut().save() {
+                                        self.message = Some(format!("Failed to save: {}", e));
+                                        return Ok(ControlFlow::Continue);
+                                    }
                                 }
                             }
 
@@ -1653,8 +1692,12 @@ impl App {
                             // Save file first if modified
                             if let Some(buffer_mut) = self.workspace.get_buffer_mut(buffer_id) {
                                 if buffer_mut.text_buffer().is_modified() {
-                                    self.backup_manager.create_backup(&path)?;
-                                    buffer_mut.text_buffer_mut().save()?;
+                                    let _ = self.backup_manager.create_backup(&path);
+
+                                    if let Err(e) = buffer_mut.text_buffer_mut().save() {
+                                        self.message = Some(format!("Failed to save: {}", e));
+                                        return Ok(ControlFlow::Continue);
+                                    }
                                 }
                             }
 
@@ -1758,12 +1801,37 @@ impl App {
                 // Save buffer then close
                 if let Some(buffer_id) = self.pending_close_buffer_id {
                     if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
-                        if let Some(path) = buffer.file_path() {
-                            self.backup_manager.create_backup(path)?;
-                            buffer.text_buffer_mut().save()?;
-                            self.message = Some("Saved".to_string());
-                            // Notify LSP about save
-                            self.notify_lsp_did_save();
+                        if let Some(path) = buffer.file_path().cloned() {
+                            // Try to create backup (ignore errors - backup is optional)
+                            let _ = self.backup_manager.create_backup(&path);
+
+                            // Store content before attempting save (for sudo retry)
+                            let content = buffer.text_buffer().to_string();
+
+                            match buffer.text_buffer_mut().save() {
+                                Ok(_) => {
+                                    self.message = Some("Saved".to_string());
+                                    self.notify_lsp_did_save();
+                                }
+                                Err(e) => {
+                                    if self.is_permission_denied(&e) {
+                                        // Set sudo save state
+                                        self.pending_sudo_save_path = Some(path);
+                                        self.pending_sudo_save_content = Some(content);
+                                        self.mode = AppMode::ConfirmSudoSave;
+                                        self.message = Some(
+                                            "Permission denied. Save with sudo? (y/n)".to_string()
+                                        );
+                                        // Keep the close pending
+                                        return Ok(ControlFlow::Continue);
+                                    } else {
+                                        self.message = Some(format!("Save failed: {}", e));
+                                        self.mode = AppMode::Normal;
+                                        self.pending_close_buffer_id = None;
+                                        return Ok(ControlFlow::Continue);
+                                    }
+                                }
+                            }
                         } else {
                             self.message = Some("No file path set".to_string());
                             self.mode = AppMode::Normal;
@@ -1834,6 +1902,34 @@ impl App {
                 self.message = Some("Close cancelled".to_string());
                 self.pending_close_buffer_id = None;
             }
+        }
+        Ok(ControlFlow::Continue)
+    }
+
+    /// Handle key in confirm sudo save mode
+    fn handle_confirm_sudo_save_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // User confirmed - set flag to execute on next cycle
+                self.execute_sudo_save_on_render = true;
+                self.mode = AppMode::Normal;
+                self.message = Some("Executing sudo save...".to_string());
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                // Cancel sudo save
+                self.mode = AppMode::Normal;
+                self.message = Some("Save cancelled".to_string());
+                self.pending_sudo_save_path = None;
+                self.pending_sudo_save_content = None;
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = None;
+                self.pending_sudo_save_path = None;
+                self.pending_sudo_save_content = None;
+            }
+            _ => {}
         }
         Ok(ControlFlow::Continue)
     }
@@ -2762,12 +2858,31 @@ impl App {
                 return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('s')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+S - Save
-                if let Some(path) = buffer.file_path() {
-                    self.backup_manager.create_backup(path)?;
-                    buffer.text_buffer_mut().save()?;
-                    self.message = Some("Saved".to_string());
-                    // Notify LSP about save
-                    self.notify_lsp_did_save();
+                if let Some(path) = buffer.file_path().cloned() {
+                    // Try to create backup (ignore errors - backup is optional)
+                    let _ = self.backup_manager.create_backup(&path);
+
+                    // Store content before attempting save (for sudo retry)
+                    let content = buffer.text_buffer().to_string();
+
+                    match buffer.text_buffer_mut().save() {
+                        Ok(_) => {
+                            self.message = Some("Saved".to_string());
+                            self.notify_lsp_did_save();
+                        }
+                        Err(e) => {
+                            if self.is_permission_denied(&e) {
+                                self.pending_sudo_save_path = Some(path);
+                                self.pending_sudo_save_content = Some(content);
+                                self.mode = AppMode::ConfirmSudoSave;
+                                self.message = Some(
+                                    "Permission denied. Save with sudo? (y/n)".to_string()
+                                );
+                            } else {
+                                self.message = Some(format!("Save failed: {}", e));
+                            }
+                        }
+                    }
                 } else {
                     self.message = Some("No file path set".to_string());
                 }
@@ -4492,6 +4607,86 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Check if an error is a permission denied error
+    fn is_permission_denied(&self, error: &anyhow::Error) -> bool {
+        if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+            return io_error.kind() == std::io::ErrorKind::PermissionDenied;
+        }
+        false
+    }
+
+    /// Check if sudo save needs to be executed
+    pub fn needs_sudo_save(&self) -> bool {
+        self.execute_sudo_save_on_render
+    }
+
+    /// Execute sudo save operation
+    pub fn execute_sudo_save(&mut self, terminal: &crate::render::Terminal) -> Result<()> {
+        self.execute_sudo_save_on_render = false;
+
+        let path = self.pending_sudo_save_path.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No pending sudo save path"))?;
+        let content = self.pending_sudo_save_content.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No pending sudo save content"))?;
+
+        // Suspend TUI
+        terminal.cleanup()?;
+
+        // Execute: echo "content" | sudo tee filepath > /dev/null
+        let result = std::process::Command::new("sudo")
+            .arg("tee")
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(content.as_bytes())?;
+                }
+                child.wait()
+            });
+
+        // Resume TUI
+        let _ = crossterm::terminal::enable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = crossterm::execute!(
+            stdout,
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::SetCursorStyle::SteadyBlock,
+            crossterm::cursor::Show
+        );
+
+        // Handle result
+        match result {
+            Ok(status) if status.success() => {
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        buffer.text_buffer_mut().set_modified(false);
+                    }
+                }
+                self.message = Some("Saved with sudo".to_string());
+                self.notify_lsp_did_save();
+            }
+            Ok(status) => {
+                self.message = Some(format!("Sudo save failed: exit code {}",
+                    status.code().unwrap_or(-1)));
+            }
+            Err(e) => {
+                self.message = Some(format!("Sudo error: {}", e));
+            }
+        }
+
+        // Clear pending state
+        self.pending_sudo_save_path = None;
+        self.pending_sudo_save_content = None;
+
+        Ok(())
     }
 
     /// Save session state for the current project
