@@ -55,6 +55,13 @@ pub struct ProjectSearchResult {
     pub match_end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionMark {
+    pub file_path: PathBuf,
+    pub line: usize,
+    pub column: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     Search,
@@ -143,6 +150,9 @@ pub struct App {
     project_search_results: Vec<ProjectSearchResult>,
     project_search_selected: usize,
     project_search_scroll_offset: usize,
+    // Position marks state
+    position_marks: Vec<PositionMark>,
+    current_mark_index: usize,
     // Pending close buffer (for ConfirmCloseTab mode)
     pending_close_buffer_id: Option<crate::workspace::BufferId>,
     // Sudo save state
@@ -230,6 +240,8 @@ impl App {
             project_search_results: Vec::new(),
             project_search_selected: 0,
             project_search_scroll_offset: 0,
+            position_marks: Vec::new(),
+            current_mark_index: 0,
             pending_close_buffer_id: None,
             pending_sudo_save_path: None,
             pending_sudo_save_content: None,
@@ -330,6 +342,8 @@ impl App {
                 project_search_results: Vec::new(),
                 project_search_selected: 0,
                 project_search_scroll_offset: 0,
+                position_marks: Vec::new(),
+                current_mark_index: 0,
                 pending_close_buffer_id: None,
                 pending_sudo_save_path: None,
                 pending_sudo_save_content: None,
@@ -396,6 +410,8 @@ impl App {
             project_search_results: Vec::new(),
             project_search_selected: 0,
             project_search_scroll_offset: 0,
+            position_marks: Vec::new(),
+            current_mark_index: 0,
             pending_close_buffer_id: None,
             pending_sudo_save_path: None,
             pending_sudo_save_content: None,
@@ -727,6 +743,17 @@ impl App {
             // Get diagnostics for current buffer
             let buffer_diagnostics = self.diagnostics_store.get(buffer.id().0);
 
+            // Get position marks for current buffer
+            let position_marks_positions: Vec<(usize, usize, usize)> = if let Some(file_path) = buffer.file_path() {
+                self.position_marks
+                    .iter()
+                    .filter(|mark| mark.file_path == *file_path)
+                    .map(|mark| (mark.line, mark.column, 1)) // Single character
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             BufferView::render(
                 terminal,
                 buffer.text_buffer(),
@@ -739,6 +766,7 @@ impl App {
                 self.ai_suggestion.as_ref(),
                 buffer.file_path().map(|p| p.as_path()),
                 self.show_indent_guides,
+                &position_marks_positions,
             )?;
             StatusBar::render(
                 terminal,
@@ -930,6 +958,21 @@ impl App {
         let text_buffer = buffer.text_buffer();
         let editor_state = buffer.editor_state();
 
+        // Get position marks for current buffer
+        let mark_positions: std::collections::HashSet<(usize, usize)> = if let Some(file_path) = buffer.file_path() {
+            self.position_marks
+                .iter()
+                .filter(|mark| mark.file_path == *file_path)
+                .map(|mark| (mark.line, mark.column))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        // Mark colors
+        let mark_bg = crossterm::style::Color::Rgb { r: 255, g: 100, b: 255 }; // Magenta
+        let mark_fg = crossterm::style::Color::White;
+
         // Render each line in the pane
         for screen_row in 0..pane_rect.height {
             let buffer_line = editor_state.viewport.top_line + screen_row as usize;
@@ -1002,12 +1045,19 @@ impl App {
                         let ch = chars[col_idx];
                         let byte_offset = line_start_byte + line.chars().take(col_idx).map(|c| c.len_utf8()).sum::<usize>();
 
+                        // Check if this position is marked (highest priority)
+                        let is_marked = mark_positions.contains(&(buffer_line, col_idx));
+
                         // Check if this character is selected
                         let is_selected = selection_range
                             .map(|(start, end)| col_idx >= start && col_idx < end)
                             .unwrap_or(false);
 
-                        if is_selected {
+                        if is_marked {
+                            // Render with mark highlighting (highest priority)
+                            terminal.set_bg(mark_bg)?;
+                            terminal.set_fg(mark_fg)?;
+                        } else if is_selected {
                             // Render with selection highlighting
                             terminal.set_bg(selection_bg)?;
                             terminal.set_fg(selection_fg)?;
@@ -1041,7 +1091,13 @@ impl App {
                                 break;
                             }
 
-                            if col_idx >= start_col && col_idx < end_col {
+                            // Check if this position is marked (highest priority)
+                            let is_marked = mark_positions.contains(&(buffer_line, col_idx));
+
+                            if is_marked {
+                                terminal.set_bg(mark_bg)?;
+                                terminal.set_fg(mark_fg)?;
+                            } else if col_idx >= start_col && col_idx < end_col {
                                 terminal.set_bg(selection_bg)?;
                                 terminal.set_fg(selection_fg)?;
                             } else if !is_active {
@@ -1051,15 +1107,29 @@ impl App {
                             terminal.reset_color()?;
                         }
                     } else {
-                        // No selection, just render normally
-                        let chars: Vec<char> = line.chars().skip(editor_state.viewport.left_column).take(available_width).collect();
-                        let line_str: String = chars.into_iter().collect();
+                        // No selection, render with mark highlighting
+                        let chars: Vec<char> = line.chars().collect();
 
-                        if !is_active {
-                            terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                        for (col_idx, &ch) in chars.iter().enumerate() {
+                            if col_idx < editor_state.viewport.left_column {
+                                continue;
+                            }
+                            if col_idx >= editor_state.viewport.left_column + available_width {
+                                break;
+                            }
+
+                            // Check if this position is marked
+                            let is_marked = mark_positions.contains(&(buffer_line, col_idx));
+
+                            if is_marked {
+                                terminal.set_bg(mark_bg)?;
+                                terminal.set_fg(mark_fg)?;
+                            } else if !is_active {
+                                terminal.set_fg(crossterm::style::Color::DarkGrey)?;
+                            }
+                            terminal.print(&ch.to_string())?;
+                            terminal.reset_color()?;
                         }
-                        terminal.print(&line_str)?;
-                        terminal.reset_color()?;
                     }
                 }
             }
@@ -3145,6 +3215,12 @@ impl App {
                 self.search_use_regex = true;  // Default to regex mode
                 self.message = Some("Replace [REGEX]:".to_string());
                 return Ok(ControlFlow::Continue);
+            } else if matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+X Ctrl+U - Toggle mark word at cursor
+                if let Err(e) = self.toggle_word_mark_at_cursor() {
+                    self.message = Some(format!("Toggle mark failed: {}", e));
+                }
+                return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+X Ctrl+C - Exit
                 if self.workspace.has_modified_buffers() {
@@ -3227,6 +3303,14 @@ impl App {
                     return Ok(ControlFlow::Continue);
                 }
                 return Ok(ControlFlow::Exit);
+            }
+
+            // Ctrl+U - Cycle through marks
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                if let Err(e) = self.cycle_to_next_mark() {
+                    self.message = Some(format!("Cycle marks failed: {}", e));
+                }
+                return Ok(ControlFlow::Continue);
             }
 
             // Ctrl+W - Close current buffer/tab
@@ -4901,6 +4985,221 @@ impl App {
             return io_error.kind() == std::io::ErrorKind::PermissionDenied;
         }
         false
+    }
+
+    /// Get word at cursor position with its boundaries
+    fn get_word_at_cursor(&self, buffer: &crate::workspace::Buffer) -> Option<(String, usize, usize)> {
+        let cursor_pos = buffer.editor_state().cursor.position();
+        let line_text = buffer.text_buffer().get_line(cursor_pos.line)?;
+        let col = cursor_pos.column;
+
+        if line_text.is_empty() || col >= line_text.chars().count() {
+            return None;
+        }
+
+        let chars: Vec<char> = line_text.chars().collect();
+        let cursor_char = chars.get(col)?;
+
+        // Check if we're on a word character (alphanumeric or underscore)
+        if !cursor_char.is_alphanumeric() && *cursor_char != '_' {
+            return None;
+        }
+
+        // Find word start
+        let mut start = col;
+        while start > 0 {
+            let ch = chars[start - 1];
+            if !ch.is_alphanumeric() && ch != '_' {
+                break;
+            }
+            start -= 1;
+        }
+
+        // Find word end
+        let mut end = col + 1;
+        while end < chars.len() {
+            let ch = chars[end];
+            if !ch.is_alphanumeric() && ch != '_' {
+                break;
+            }
+            end += 1;
+        }
+
+        let word: String = chars[start..end].iter().collect();
+        Some((word, start, end))
+    }
+
+    /// Toggle mark at cursor position - marks if not marked, unmarks if already marked
+    fn toggle_word_mark_at_cursor(&mut self) -> Result<()> {
+        let buffer_id = self.layout.active_buffer()
+            .ok_or_else(|| anyhow::anyhow!("No active buffer"))?;
+        let buffer = self.workspace.get_buffer(buffer_id)
+            .ok_or_else(|| anyhow::anyhow!("Buffer not found"))?;
+
+        let file_path = buffer.file_path()
+            .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?
+            .clone();
+
+        let cursor_pos = buffer.editor_state().cursor.position();
+
+        // Check if this position is already marked
+        if let Some(pos) = self.position_marks.iter().position(|mark| {
+            mark.file_path == file_path &&
+            mark.line == cursor_pos.line &&
+            mark.column == cursor_pos.column
+        }) {
+            // Already marked - unmark it
+            self.position_marks.remove(pos);
+            // Adjust current_mark_index if needed
+            if self.current_mark_index >= self.position_marks.len() && !self.position_marks.is_empty() {
+                self.current_mark_index = self.position_marks.len() - 1;
+            }
+            self.message = Some(format!("Unmarked position ({} marks remaining)", self.position_marks.len()));
+        } else {
+            // Not marked - mark it
+            self.position_marks.push(PositionMark {
+                file_path,
+                line: cursor_pos.line,
+                column: cursor_pos.column,
+            });
+            self.message = Some(format!("Marked position ({} marks total)", self.position_marks.len()));
+        }
+
+        Ok(())
+    }
+
+    /// Mark word at cursor
+    fn mark_word_at_cursor(&mut self) -> Result<()> {
+        let buffer_id = self.layout.active_buffer()
+            .ok_or_else(|| anyhow::anyhow!("No active buffer"))?;
+        let buffer = self.workspace.get_buffer(buffer_id)
+            .ok_or_else(|| anyhow::anyhow!("Buffer not found"))?;
+
+        let file_path = buffer.file_path()
+            .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?
+            .clone();
+
+        let cursor_pos = buffer.editor_state().cursor.position();
+
+        if let Some((word, start_col, _)) = self.get_word_at_cursor(buffer) {
+            // Check if this word is already marked at this location
+            let already_marked = self.position_marks.iter().any(|mark| {
+                mark.file_path == file_path &&
+                mark.line == cursor_pos.line &&
+                mark.column == start_col
+            });
+
+            if already_marked {
+                self.message = Some(format!("'{}' already marked", word));
+            } else {
+                self.position_marks.push(PositionMark {
+                    file_path,
+                    line: cursor_pos.line,
+                    column: start_col,
+                });
+                self.message = Some(format!("Marked '{}' ({} marks total)", word, self.position_marks.len()));
+            }
+        } else {
+            self.message = Some("No word at cursor".to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Unmark word at cursor
+    fn unmark_word_at_cursor(&mut self) -> Result<()> {
+        let buffer_id = self.layout.active_buffer()
+            .ok_or_else(|| anyhow::anyhow!("No active buffer"))?;
+        let buffer = self.workspace.get_buffer(buffer_id)
+            .ok_or_else(|| anyhow::anyhow!("Buffer not found"))?;
+
+        let file_path = buffer.file_path()
+            .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?;
+
+        let cursor_pos = buffer.editor_state().cursor.position();
+
+        if let Some((word, start_col, _)) = self.get_word_at_cursor(buffer) {
+            // Find and remove the mark at this location
+            if let Some(pos) = self.position_marks.iter().position(|mark| {
+                mark.file_path == *file_path &&
+                mark.line == cursor_pos.line &&
+                mark.column == start_col
+            }) {
+                self.position_marks.remove(pos);
+                // Adjust current_mark_index if needed
+                if self.current_mark_index >= self.position_marks.len() && !self.position_marks.is_empty() {
+                    self.current_mark_index = self.position_marks.len() - 1;
+                }
+                self.message = Some(format!("Unmarked '{}' ({} marks remaining)", word, self.position_marks.len()));
+            } else {
+                self.message = Some(format!("'{}' is not marked at this location", word));
+            }
+        } else {
+            self.message = Some("No word at cursor".to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Cycle to next mark
+    fn cycle_to_next_mark(&mut self) -> Result<()> {
+        if self.position_marks.is_empty() {
+            self.message = Some("No marks set".to_string());
+            return Ok(());
+        }
+
+        // Move to next mark
+        self.current_mark_index = (self.current_mark_index + 1) % self.position_marks.len();
+        let mark = &self.position_marks[self.current_mark_index].clone();
+
+        // Find the buffer with this file path, or open it
+        let buffer_id = {
+            let mut found_id = None;
+            for id in self.workspace.buffer_ids() {
+                if let Some(buffer) = self.workspace.get_buffer(id) {
+                    if let Some(path) = buffer.file_path() {
+                        if path == &mark.file_path {
+                            found_id = Some(id);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(id) = found_id {
+                id
+            } else {
+                // Open the file
+                let result = self.workspace.open_file(mark.file_path.clone())?;
+                result.buffer_id()
+            }
+        };
+
+        // Switch to the buffer
+        let pane = self.layout.active_pane();
+        self.layout.set_buffer(pane, buffer_id);
+
+        // Move cursor to the marked position
+        if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+            let editor_state = buffer.editor_state_mut();
+            editor_state.cursor.set_position(Position::new(mark.line, mark.column));
+            editor_state.clear_selection();
+
+            // Center viewport on cursor
+            let (_, term_height) = crossterm::terminal::size()?;
+            let visible_lines = term_height.saturating_sub(4) as usize; // Account for status bars
+            let target_top = mark.line.saturating_sub(visible_lines / 2);
+            editor_state.viewport.top_line = target_top;
+        }
+
+        self.message = Some(format!("Mark {}/{} in {}:{}:{}",
+            self.current_mark_index + 1,
+            self.position_marks.len(),
+            mark.file_path.display(),
+            mark.line + 1,
+            mark.column + 1));
+
+        Ok(())
     }
 
     /// Check if sudo save needs to be executed

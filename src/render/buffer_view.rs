@@ -11,6 +11,7 @@ pub struct BufferView;
 
 impl BufferView {
     /// Render the text buffer to the terminal
+    /// word_marks_positions: list of (line, start_column, word_length) for marked words in current file
     pub fn render(
         terminal: &Terminal,
         buffer: &TextBuffer,
@@ -23,6 +24,7 @@ impl BufferView {
         ai_suggestion: Option<&String>,
         file_path: Option<&Path>,
         show_indent_guides: bool,
+        word_marks_positions: &[(usize, usize, usize)],
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -152,7 +154,7 @@ impl BufferView {
                 let indent_level = indent_levels.get(screen_row as usize).copied().unwrap_or(0);
 
                 // Render the line with selection highlighting if applicable
-                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line, show_indent_guides, indent_level)?;
+                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line, show_indent_guides, indent_level, word_marks_positions)?;
             }
         }
 
@@ -188,6 +190,7 @@ impl BufferView {
         show_ai_on_cursor_line: bool,
         show_indent_guides: bool,
         indent_level: usize,
+        word_marks_positions: &[(usize, usize, usize)],
     ) -> Result<()> {
         // Calculate byte offset for this line in the buffer
         let line_start_byte = buffer.line_to_byte(line_num);
@@ -207,9 +210,25 @@ impl BufferView {
             None
         };
 
+        // Get marked word ranges for this line
+        let marked_ranges: Vec<(usize, usize)> = word_marks_positions
+            .iter()
+            .filter(|(mark_line, _, _)| *mark_line == line_num)
+            .map(|(_, start_col, word_len)| (*start_col, start_col + word_len))
+            .collect();
+
+        // Helper to check if a column is in a marked word
+        let is_marked = |col: usize| -> bool {
+            marked_ranges.iter().any(|(start, end)| col >= *start && col < *end)
+        };
+
         // Selection colors - use bright cyan background with black text for maximum contrast
         let selection_bg = Color::Rgb { r: 100, g: 180, b: 255 }; // Bright blue
         let selection_fg = Color::Black;
+
+        // Mark colors - use magenta background with white text
+        let mark_bg = Color::Rgb { r: 255, g: 100, b: 255 }; // Magenta
+        let mark_fg = Color::White;
 
         // Guide color for indentation guides
         let guide_color = Color::Rgb { r: 60, g: 60, b: 60 };
@@ -233,18 +252,26 @@ impl BufferView {
 
         // If no syntax highlighting, use simple rendering
         if highlight_spans.is_none() {
-            if let Some((start_col, end_col)) = selection_range {
-                // Render with selection - need to work character-by-character
-                // because start_col/end_col are character positions, not byte offsets
-                let chars: Vec<char> = line.chars().collect();
+            let chars: Vec<char> = line.chars().collect();
 
-                for (col_idx, &ch) in chars.iter().enumerate() {
-                    // Check if this is a guide position
-                    let is_guide_pos = show_indent_guides
-                        && ch == ' '
-                        && col_idx < indent_level * 4
-                        && col_idx % 4 == 0;
+            for (col_idx, &ch) in chars.iter().enumerate() {
+                // Check if this is a guide position
+                let is_guide_pos = show_indent_guides
+                    && ch == ' '
+                    && col_idx < indent_level * 4
+                    && col_idx % 4 == 0;
 
+                // Check if marked (priority over selection)
+                if is_marked(col_idx) {
+                    terminal.set_bg(mark_bg)?;
+                    terminal.set_fg(mark_fg)?;
+                    if is_guide_pos {
+                        terminal.print("│")?;
+                    } else {
+                        terminal.print(&ch.to_string())?;
+                    }
+                    terminal.reset_color()?;
+                } else if let Some((start_col, end_col)) = selection_range {
                     if col_idx >= start_col && col_idx < end_col {
                         terminal.set_bg(selection_bg)?;
                         terminal.set_fg(selection_fg)?;
@@ -263,23 +290,14 @@ impl BufferView {
                             terminal.print(&ch.to_string())?;
                         }
                     }
-                }
-            } else {
-                // Simple case without selection - but need to handle guides
-                if show_indent_guides && indent_level > 0 {
-                    let chars: Vec<char> = line.chars().collect();
-                    for (col_idx, &ch) in chars.iter().enumerate() {
-                        let is_guide_pos = ch == ' ' && col_idx < indent_level * 4 && col_idx % 4 == 0;
-                        if is_guide_pos {
-                            terminal.set_fg(guide_color)?;
-                            terminal.print("│")?;
-                            terminal.reset_color()?;
-                        } else {
-                            terminal.print(&ch.to_string())?;
-                        }
-                    }
                 } else {
-                    terminal.print(line)?;
+                    if is_guide_pos {
+                        terminal.set_fg(guide_color)?;
+                        terminal.print("│")?;
+                        terminal.reset_color()?;
+                    } else {
+                        terminal.print(&ch.to_string())?;
+                    }
                 }
             }
             return Ok(());
@@ -316,19 +334,42 @@ impl BufferView {
         while col_idx < chars.len() {
             let absolute_byte = line_start_byte + char_idx;
 
+            // Check if current character is marked (priority over selection)
+            let is_marked_char = is_marked(col_idx);
+
             // Check if current character is selected
             let is_selected = selection_range
                 .map(|(start, end)| col_idx >= start && col_idx < end)
                 .unwrap_or(false);
 
-            if is_selected {
+            if is_marked_char {
+                // Find the end of the marked region
+                let mut end_col = col_idx;
+                while end_col < chars.len() && is_marked(end_col) {
+                    end_col += 1;
+                }
+
+                // Render the entire marked region at once
+                let marked_text: String = chars[col_idx..end_col].iter().collect();
+                terminal.set_bg(mark_bg)?;
+                terminal.set_fg(mark_fg)?;
+                terminal.print(&marked_text)?;
+                terminal.reset_color()?;
+
+                // Advance
+                for i in col_idx..end_col {
+                    char_idx += chars[i].len_utf8();
+                }
+                col_idx = end_col;
+            } else if is_selected {
                 // Find the end of the selected region
                 let mut end_col = col_idx;
                 while end_col < chars.len() {
                     let is_still_selected = selection_range
                         .map(|(start, end)| end_col >= start && end_col < end)
                         .unwrap_or(false);
-                    if !is_still_selected {
+                    // Don't extend into marked regions
+                    if !is_still_selected || is_marked(end_col) {
                         break;
                     }
                     end_col += 1;
