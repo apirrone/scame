@@ -1116,6 +1116,66 @@ impl App {
         }
 
         match mouse_event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Left-click to position cursor
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Convert mouse coordinates to buffer position
+                let mouse_col = mouse_event.column as usize;
+                let mouse_row = mouse_event.row as usize;
+
+                // Account for UI elements: tab bar (1 line), path bar (1 line)
+                let top_offset = 2;
+                if mouse_row < top_offset {
+                    return Ok(ControlFlow::Continue);
+                }
+                let content_row = mouse_row - top_offset;
+
+                // Calculate line number width
+                let line_number_width = if self.show_line_numbers {
+                    let line_count = buffer.text_buffer().len_lines();
+                    let digits = if line_count == 0 {
+                        1
+                    } else {
+                        (line_count as f64).log10().floor() as usize + 1
+                    };
+                    digits.max(3) + 2 // +1 for diagnostic marker, +1 for trailing space
+                } else {
+                    0
+                };
+
+                // Check if click is in the line number area
+                if mouse_col < line_number_width {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let content_col = mouse_col - line_number_width;
+
+                // Calculate buffer line and column
+                let buffer_line = buffer.editor_state().viewport.top_line + content_row;
+                let buffer_col = content_col;
+
+                // Make sure the line exists
+                if buffer_line >= buffer.text_buffer().len_lines() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                // Clamp column to line length
+                let line_len = buffer.text_buffer().line_len(buffer_line);
+                let clamped_col = buffer_col.min(line_len);
+
+                // Position cursor at click location
+                buffer.editor_state_mut().cursor.set_position(Position::new(buffer_line, clamped_col));
+                buffer.editor_state_mut().clear_selection();
+
+                Ok(ControlFlow::Continue)
+            }
             MouseEventKind::Down(MouseButton::Middle) => {
                 // Middle-click paste (Linux X11 style)
                 let Some(buffer_id) = self.layout.active_buffer() else {
