@@ -1216,6 +1216,46 @@ impl App {
 
                 Ok(ControlFlow::Continue)
             }
+            MouseEventKind::ScrollUp => {
+                // Scroll up with mouse wheel
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Scroll up by 3 lines
+                let editor_state = buffer.editor_state_mut();
+                if editor_state.viewport.top_line >= 3 {
+                    editor_state.viewport.top_line -= 3;
+                } else {
+                    editor_state.viewport.top_line = 0;
+                }
+
+                Ok(ControlFlow::Continue)
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll down with mouse wheel
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Get max lines before borrowing editor state mutably
+                let max_lines = buffer.text_buffer().len_lines();
+                let max_top_line = max_lines.saturating_sub(1);
+
+                // Scroll down by 3 lines
+                let editor_state = buffer.editor_state_mut();
+                editor_state.viewport.top_line = (editor_state.viewport.top_line + 3).min(max_top_line);
+
+                Ok(ControlFlow::Continue)
+            }
             _ => Ok(ControlFlow::Continue),
         }
     }
