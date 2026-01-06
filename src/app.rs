@@ -10,7 +10,7 @@ use crate::search::{FileSearch, FileSearchResult};
 use crate::syntax::{HighlightSpan, Highlighter, SupportedLanguage};
 use crate::workspace::{FileTree, Workspace};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
 use regex::RegexBuilder;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -1101,7 +1101,153 @@ impl App {
                 self.handle_resize(width, height);
                 Ok(ControlFlow::Continue)
             }
+            Event::Mouse(mouse_event) => {
+                self.handle_mouse(mouse_event)
+            }
             _ => Ok(ControlFlow::Continue),
+        }
+    }
+
+    /// Handle a mouse event
+    fn handle_mouse(&mut self, mouse_event: MouseEvent) -> Result<ControlFlow> {
+        // Only handle middle-click in normal mode
+        if self.mode != AppMode::Normal {
+            return Ok(ControlFlow::Continue);
+        }
+
+        match mouse_event.kind {
+            MouseEventKind::Down(MouseButton::Middle) => {
+                // Middle-click paste (Linux X11 style)
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Convert mouse coordinates to buffer position
+                let mouse_col = mouse_event.column as usize;
+                let mouse_row = mouse_event.row as usize;
+
+                // Account for UI elements: tab bar (1 line), path bar (1 line)
+                let top_offset = 2;
+                if mouse_row < top_offset {
+                    return Ok(ControlFlow::Continue);
+                }
+                let content_row = mouse_row - top_offset;
+
+                // Calculate line number width
+                let line_number_width = if self.show_line_numbers {
+                    let line_count = buffer.text_buffer().len_lines();
+                    let digits = if line_count == 0 {
+                        1
+                    } else {
+                        (line_count as f64).log10().floor() as usize + 1
+                    };
+                    digits.max(3) + 2 // +1 for diagnostic marker, +1 for trailing space
+                } else {
+                    0
+                };
+
+                // Check if click is in the line number area
+                if mouse_col < line_number_width {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let content_col = mouse_col - line_number_width;
+
+                // Calculate buffer line and column
+                let buffer_line = buffer.editor_state().viewport.top_line + content_row;
+                let buffer_col = content_col;
+
+                // Make sure the line exists
+                if buffer_line >= buffer.text_buffer().len_lines() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                // Clamp column to line length
+                let line_len = buffer.text_buffer().line_len(buffer_line);
+                let clamped_col = buffer_col.min(line_len);
+
+                // Get text from primary selection (X11 selection, what's currently highlighted)
+                // On Linux, this gets whatever is selected anywhere in the OS
+                let clipboard_text = {
+                    #[cfg(target_os = "linux")]
+                    {
+                        // Try to get primary selection first (X11 selection buffer)
+                        use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
+                        match Clipboard::new() {
+                            Ok(mut clipboard) => {
+                                clipboard
+                                    .get()
+                                    .clipboard(LinuxClipboardKind::Primary)
+                                    .text()
+                                    .ok()
+                            }
+                            Err(_) => None
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        // On non-Linux systems, fall back to regular clipboard
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => clipboard.get_text().ok(),
+                            Err(_) => None
+                        }
+                    }
+                };
+
+                if let Some(text) = clipboard_text {
+                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                    let pos = Position::new(buffer_line, clamped_col);
+                    text_buffer.insert(pos, &text)?;
+                    undo_manager.record(Change::Insert {
+                        pos,
+                        text: text.clone(),
+                    });
+
+                    // Move cursor to end of pasted text
+                    let char_idx = text_buffer.pos_to_char(pos)? + text.len();
+                    editor_state.cursor.set_position(text_buffer.char_to_pos(char_idx));
+                    editor_state.ensure_cursor_visible();
+                    self.message = Some("Pasted".to_string());
+                }
+
+                Ok(ControlFlow::Continue)
+            }
+            _ => Ok(ControlFlow::Continue),
+        }
+    }
+
+    /// Copy current selection to primary selection (X11)
+    fn copy_selection_to_primary(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(buffer_id) = self.layout.active_buffer() {
+                if let Some(buffer) = self.workspace.get_buffer(buffer_id) {
+                    if let Some(selection) = buffer.editor_state().selection {
+                        let (start, end) = selection.range();
+                        if let Ok(start_idx) = buffer.text_buffer().pos_to_char(start) {
+                            if let Ok(end_idx) = buffer.text_buffer().pos_to_char(end) {
+                                if start_idx < end_idx {
+                                    let text = buffer.text_buffer().to_string();
+                                    let selected: String = text.chars().skip(start_idx).take(end_idx - start_idx).collect();
+
+                                    // Copy to primary selection
+                                    use arboard::{Clipboard, SetExtLinux, LinuxClipboardKind};
+                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                        let _ = clipboard
+                                            .set()
+                                            .clipboard(LinuxClipboardKind::Primary)
+                                            .text(selected);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2485,6 +2631,7 @@ impl App {
 
             // Select the found text (anchor at start, head at end)
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
+            self.copy_selection_to_primary();
 
             self.message = Some(format!("Found: {}", self.search_pattern));
             Ok(true)
@@ -2547,6 +2694,7 @@ impl App {
 
             // Select the found text (anchor at start, head at end)
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
+            self.copy_selection_to_primary();
 
             Ok(true)
         } else {
@@ -3402,6 +3550,7 @@ impl App {
                 editor_state.start_selection();
                 Movement::move_to_line_start(editor_state);
                 editor_state.update_selection();
+                self.copy_selection_to_primary();
             }
 
             // Ctrl+A - Beginning of line
@@ -3420,6 +3569,7 @@ impl App {
                 editor_state.start_selection();
                 Movement::move_to_line_end(editor_state, text_buffer);
                 editor_state.update_selection();
+                self.copy_selection_to_primary();
             }
 
             // Ctrl+E - End of line
@@ -3559,6 +3709,7 @@ impl App {
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
+                    self.copy_selection_to_primary();
                 } else {
                     editor_state.clear_selection();
                 }
@@ -3579,6 +3730,7 @@ impl App {
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
+                    self.copy_selection_to_primary();
                 } else {
                     editor_state.clear_selection();
                 }
@@ -3599,6 +3751,7 @@ impl App {
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
+                    self.copy_selection_to_primary();
                 } else {
                     editor_state.clear_selection();
                 }
@@ -3619,6 +3772,7 @@ impl App {
 
                 if mods.contains(KeyModifiers::SHIFT) {
                     editor_state.update_selection();
+                    self.copy_selection_to_primary();
                 } else {
                     editor_state.clear_selection();
                 }
