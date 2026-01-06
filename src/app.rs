@@ -1558,9 +1558,9 @@ impl App {
             return;
         }
 
-        // Build regex pattern
+        // Build regex pattern (case insensitive)
         let pattern = match RegexBuilder::new(&self.project_search_pattern)
-            .case_insensitive(false)
+            .case_insensitive(true)
             .build()
         {
             Ok(p) => p,
