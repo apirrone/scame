@@ -9,13 +9,35 @@ pub fn language() -> Language {
 
 /// Get the Markdown highlighting query
 pub fn query() -> Result<Query, tree_sitter::QueryError> {
-    // Very minimal query to avoid version-specific node types
-    // tree-sitter-md has different node types across versions
-    // If this fails, syntax highlighting will be disabled for markdown (gracefully)
+    // Query based on actual tree-sitter-md node types
     let query_source = r#"
-; Basic code highlighting (most stable across versions)
-(code_span) @string
+; Headings
+(atx_heading) @keyword
+(atx_h1_marker) @keyword
+(atx_h2_marker) @keyword
+(atx_h3_marker) @keyword
+(atx_h4_marker) @keyword
+(atx_h5_marker) @keyword
+(atx_h6_marker) @keyword
+
+; Code blocks
 (fenced_code_block) @string
+(code_fence_content) @string
+(indented_code_block) @string
+
+; Code fence info string (language)
+(info_string) @type
+
+; Lists
+(list_marker_minus) @keyword
+(list_marker_plus) @keyword
+(list_marker_star) @keyword
+(list_marker_dot) @keyword
+(list_marker_parenthesis) @keyword
+
+; Blockquotes
+(block_quote) @comment
+(block_quote_marker) @comment
     "#;
 
     Query::new(&language(), query_source)
@@ -28,9 +50,11 @@ pub fn capture_names() -> Result<HashMap<usize, TokenType>, tree_sitter::QueryEr
 
     for (i, name) in query.capture_names().iter().enumerate() {
         let token_type = match name.as_ref() {
-            "keyword" => TokenType::Keyword,
-            "string" => TokenType::String,
-            "function" => TokenType::Function,
+            "keyword" => TokenType::Keyword,      // Headings, list markers, hr
+            "string" => TokenType::String,        // Code blocks and inline code
+            "function" => TokenType::Function,    // Links, images, strong emphasis
+            "type" => TokenType::Type,            // Emphasis (italic)
+            "comment" => TokenType::Comment,      // Blockquotes
             _ => continue,
         };
         map.insert(i, token_type);
