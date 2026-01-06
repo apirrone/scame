@@ -3818,28 +3818,60 @@ impl App {
                 }
             }
 
-            // Home/End
-            (KeyCode::Home, _) => {
+            // Home/End (with optional Shift for selection)
+            (KeyCode::Home, mods) => {
                 let (_, editor_state, _) = buffer.split_mut();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.start_selection();
+                }
                 Movement::move_to_line_start(editor_state);
-                editor_state.clear_selection();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.update_selection();
+                    self.copy_selection_to_primary();
+                } else {
+                    editor_state.clear_selection();
+                }
             }
-            (KeyCode::End, _) => {
+            (KeyCode::End, mods) => {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.start_selection();
+                }
                 Movement::move_to_line_end(editor_state, text_buffer);
-                editor_state.clear_selection();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.update_selection();
+                    self.copy_selection_to_primary();
+                } else {
+                    editor_state.clear_selection();
+                }
             }
 
-            // Page Up/Down
-            (KeyCode::PageUp, _) => {
+            // Page Up/Down (with optional Shift for selection)
+            (KeyCode::PageUp, mods) => {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.start_selection();
+                }
                 Movement::page_up(editor_state, text_buffer);
-                editor_state.clear_selection();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.update_selection();
+                    self.copy_selection_to_primary();
+                } else {
+                    editor_state.clear_selection();
+                }
             }
-            (KeyCode::PageDown, _) => {
+            (KeyCode::PageDown, mods) => {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.start_selection();
+                }
                 Movement::page_down(editor_state, text_buffer);
-                editor_state.clear_selection();
+                if mods.contains(KeyModifiers::SHIFT) {
+                    editor_state.update_selection();
+                    self.copy_selection_to_primary();
+                } else {
+                    editor_state.clear_selection();
+                }
             }
 
             // F12 - Jump to definition
