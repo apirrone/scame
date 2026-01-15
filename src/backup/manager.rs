@@ -9,7 +9,7 @@ pub struct BackupManager {
 
 impl BackupManager {
     pub fn new() -> Self {
-        Self { enabled: true }
+        Self { enabled: false }
     }
 
     /// Create a backup of a file before saving

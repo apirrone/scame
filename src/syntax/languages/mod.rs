@@ -5,6 +5,7 @@ pub mod markdown;
 pub mod html;
 pub mod css;
 pub mod javascript;
+pub mod xml;
 
 use crate::syntax::theme::TokenType;
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ pub enum SupportedLanguage {
     Html,
     Css,
     JavaScript,
+    Xml,
 }
 
 impl SupportedLanguage {
@@ -36,6 +38,7 @@ impl SupportedLanguage {
                 "html" | "htm" => Some(Self::Html),
                 "css" => Some(Self::Css),
                 "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
+                "xml" | "svg" | "xhtml" => Some(Self::Xml),
                 _ => None,
             })
     }
@@ -50,6 +53,7 @@ impl SupportedLanguage {
             Self::Html => html::language(),
             Self::Css => css::language(),
             Self::JavaScript => javascript::language(),
+            Self::Xml => xml::language(),
         }
     }
 
@@ -63,6 +67,7 @@ impl SupportedLanguage {
             Self::Html => html::query(),
             Self::Css => css::query(),
             Self::JavaScript => javascript::query(),
+            Self::Xml => xml::query(),
         }
     }
 
@@ -76,6 +81,7 @@ impl SupportedLanguage {
             Self::Html => html::capture_names(),
             Self::Css => css::capture_names(),
             Self::JavaScript => javascript::capture_names(),
+            Self::Xml => xml::capture_names(),
         }
     }
 }

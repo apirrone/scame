@@ -19,6 +19,7 @@ tree-sitter-md = "0.2"
 tree-sitter-html = "0.20"
 tree-sitter-css = "0.21"
 tree-sitter-javascript = "0.21"
+tree-sitter-xml = "0.6"
 
 # LSP client
 tower-lsp = "0.20"

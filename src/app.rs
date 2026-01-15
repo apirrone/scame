@@ -82,6 +82,7 @@ pub enum CommandAction {
     ToggleDiagnostics,
     ToggleAiCompletions,
     ToggleIndentGuides,
+    ToggleBackups,
 }
 
 pub struct App {
@@ -534,6 +535,13 @@ impl App {
                 description: "Enable/disable indentation guide lines (Python)".to_string(),
                 keybinding: None,
                 action: CommandAction::ToggleIndentGuides,
+            },
+            Command {
+                name: format!("Toggle Backups [{}]",
+                    if self.backup_manager.is_enabled() { "ON" } else { "OFF" }),
+                description: "Enable/disable automatic file backups (~ files)".to_string(),
+                keybinding: None,
+                action: CommandAction::ToggleBackups,
             },
         ]
     }
@@ -2073,6 +2081,11 @@ impl App {
             CommandAction::ToggleIndentGuides => {
                 self.show_indent_guides = !self.show_indent_guides;
                 self.message = Some(format!("Indent guides: {}", if self.show_indent_guides { "ON" } else { "OFF" }));
+            }
+            CommandAction::ToggleBackups => {
+                let new_state = !self.backup_manager.is_enabled();
+                self.backup_manager.set_enabled(new_state);
+                self.message = Some(format!("Backups: {}", if new_state { "ON" } else { "OFF" }));
             }
         }
         Ok(ControlFlow::Continue)
