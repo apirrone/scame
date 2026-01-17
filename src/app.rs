@@ -2968,7 +2968,7 @@ impl App {
                             let idx = word_start_col - 1;
                             if idx < chars.len() {
                                 let ch = chars[idx];
-                                if ch.is_alphanumeric() {
+                                if ch.is_alphanumeric() || ch == '_' {
                                     word_start_col -= 1;
                                 } else {
                                     break;
@@ -3682,13 +3682,13 @@ impl App {
                             if idx < chars.len() {
                                 let ch = chars[idx];
 
-                                if ch.is_alphanumeric() || ch == '_' {
-                                    // Delete the whole word (alphanumeric/underscore)
+                                if ch.is_alphanumeric() {
+                                    // Delete the whole word (alphanumeric only)
                                     while word_start > 0 {
                                         let idx = word_start - 1;
                                         if idx < chars.len() {
                                             let ch = chars[idx];
-                                            if ch.is_alphanumeric() || ch == '_' {
+                                            if ch.is_alphanumeric() {
                                                 word_start -= 1;
                                             } else {
                                                 break;
@@ -3698,7 +3698,7 @@ impl App {
                                         }
                                     }
                                 } else {
-                                    // It's punctuation - delete just one character
+                                    // It's punctuation or underscore - delete just one character
                                     word_start -= 1;
                                 }
                             }
