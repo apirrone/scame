@@ -3514,25 +3514,31 @@ impl App {
 
             // Alt+; - Toggle comment on line or selection
             (KeyCode::Char(';'), KeyModifiers::ALT) => {
-                let buffer = self.workspace.active_buffer_mut().unwrap();
+                let active_buffer_id = self.layout.active_buffer();
+                let Some(buffer_id) = active_buffer_id else {
+                    return Ok(ControlFlow::Continue);
+                };
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
 
-                // Determine comment syntax based on file extension
-                let comment_prefix = if let Some(path) = buffer.file_path() {
+                // Determine comment syntax based on file extension (prefix, suffix)
+                let (comment_prefix, comment_suffix) = if let Some(path) = buffer.file_path() {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         match ext {
-                            "py" | "pyi" | "pyw" => "# ",
-                            "rs" => "// ",
-                            "js" | "jsx" | "ts" | "tsx" | "c" | "cpp" | "h" | "hpp" | "java" | "go" => "// ",
-                            "sh" | "bash" | "zsh" => "# ",
-                            "html" | "xml" => "<!-- ",
-                            "css" | "scss" => "/* ",
-                            _ => "# ", // Default to # for unknown types
+                            "py" | "pyi" | "pyw" => ("# ", ""),
+                            "rs" => ("// ", ""),
+                            "js" | "jsx" | "ts" | "tsx" | "c" | "cpp" | "h" | "hpp" | "java" | "go" => ("// ", ""),
+                            "sh" | "bash" | "zsh" => ("# ", ""),
+                            "html" | "xml" | "svg" | "xhtml" => ("<!-- ", " -->"),
+                            "css" | "scss" => ("/* ", " */"),
+                            _ => ("# ", ""), // Default to # for unknown types
                         }
                     } else {
-                        "# "
+                        ("# ", "")
                     }
                 } else {
-                    "# "
+                    ("# ", "")
                 };
 
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
@@ -3550,8 +3556,11 @@ impl App {
                 let mut all_commented = true;
                 for line_idx in start_line..=end_line {
                     if let Some(line) = text_buffer.get_line(line_idx) {
-                        let trimmed = line.trim_start();
-                        if !trimmed.starts_with(comment_prefix.trim()) {
+                        let trimmed = line.trim();
+                        let trimmed_start = line.trim_start();
+                        // Check both prefix and suffix
+                        if !trimmed_start.starts_with(comment_prefix.trim()) ||
+                           (!comment_suffix.is_empty() && !trimmed.ends_with(comment_suffix.trim())) {
                             all_commented = false;
                             break;
                         }
@@ -3563,10 +3572,13 @@ impl App {
                 for line_idx in (start_line..=end_line).rev() {
                     if let Some(line) = text_buffer.get_line(line_idx) {
                         if all_commented {
-                            // Remove comment
-                            let trimmed = line.trim_start();
-                            if trimmed.starts_with(comment_prefix.trim()) {
-                                let indent_len = line.len() - trimmed.len();
+                            // Remove comment - need to remove both prefix and suffix
+                            let trimmed_start = line.trim_start();
+                            let trimmed = line.trim();
+
+                            if trimmed_start.starts_with(comment_prefix.trim()) {
+                                // Remove prefix
+                                let indent_len = line.len() - trimmed_start.len();
                                 let comment_start_pos = crate::buffer::Position::new(line_idx, indent_len);
                                 let comment_end_pos = crate::buffer::Position::new(line_idx, indent_len + comment_prefix.len());
 
@@ -3576,17 +3588,54 @@ impl App {
                                         text: deleted,
                                     });
                                 }
+
+                                // Remove suffix if it exists
+                                if !comment_suffix.is_empty() {
+                                    // After removing prefix, recalculate line content
+                                    if let Some(line) = text_buffer.get_line(line_idx) {
+                                        let trimmed = line.trim_end();
+                                        if trimmed.ends_with(comment_suffix.trim()) {
+                                            let suffix_start = trimmed.len() - comment_suffix.trim().len();
+                                            let line_start = line.len() - line.trim_end().len();
+                                            let suffix_start_pos = crate::buffer::Position::new(line_idx, suffix_start);
+                                            let suffix_end_pos = crate::buffer::Position::new(line_idx, suffix_start + comment_suffix.len());
+
+                                            if let Ok(deleted) = text_buffer.delete_range(suffix_start_pos, suffix_end_pos) {
+                                                changes.push(crate::buffer::Change::Delete {
+                                                    pos: suffix_start_pos,
+                                                    text: deleted,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         } else {
-                            // Add comment
+                            // Add comment - need to add both prefix and suffix
                             let indent_len = line.len() - line.trim_start().len();
                             let insert_pos = crate::buffer::Position::new(line_idx, indent_len);
 
+                            // Insert prefix
                             text_buffer.insert(insert_pos, comment_prefix)?;
                             changes.push(crate::buffer::Change::Insert {
                                 pos: insert_pos,
                                 text: comment_prefix.to_string(),
                             });
+
+                            // Insert suffix if it exists
+                            if !comment_suffix.is_empty() {
+                                // After inserting prefix, get updated line length
+                                if let Some(line) = text_buffer.get_line(line_idx) {
+                                    let line_end = line.trim_end().len();
+                                    let suffix_pos = crate::buffer::Position::new(line_idx, line_end);
+
+                                    text_buffer.insert(suffix_pos, comment_suffix)?;
+                                    changes.push(crate::buffer::Change::Insert {
+                                        pos: suffix_pos,
+                                        text: comment_suffix.to_string(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
