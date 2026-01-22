@@ -2557,12 +2557,6 @@ impl App {
                 // Ctrl+S in search mode: search forward for next occurrence
                 if !self.search_pattern.is_empty() {
                     self.search_is_reverse = false;
-                    // Save current position in case search fails
-                    let saved_pos = if let Some(buffer_id) = self.layout.active_buffer() {
-                        self.workspace.get_buffer(buffer_id).map(|b| b.editor_state().cursor.position())
-                    } else {
-                        None
-                    };
 
                     // Move cursor forward by one character to find next match
                     if let Some(buffer_id) = self.layout.active_buffer() {
@@ -2575,30 +2569,14 @@ impl App {
                         }
                     }
 
-                    // Try to search
-                    if !self.perform_search()? {
-                        // No match found, restore position and show message
-                        if let Some(pos) = saved_pos {
-                            if let Some(buffer_id) = self.layout.active_buffer() {
-                                if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
-                                    buffer.editor_state_mut().cursor.set_position(pos);
-                                }
-                            }
-                        }
-                        self.message = Some("Last occurrence".to_string());
-                    }
+                    // Search (will wrap automatically if needed)
+                    self.perform_search()?;
                 }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+R in search mode: search backward for previous occurrence
                 if !self.search_pattern.is_empty() {
                     self.search_is_reverse = true;
-                    // Save current position in case search fails
-                    let saved_pos = if let Some(buffer_id) = self.layout.active_buffer() {
-                        self.workspace.get_buffer(buffer_id).map(|b| b.editor_state().cursor.position())
-                    } else {
-                        None
-                    };
 
                     // Move cursor backward by one character to find previous match
                     if let Some(buffer_id) = self.layout.active_buffer() {
@@ -2613,18 +2591,8 @@ impl App {
                         }
                     }
 
-                    // Try to search
-                    if !self.perform_search()? {
-                        // No match found, restore position and show message
-                        if let Some(pos) = saved_pos {
-                            if let Some(buffer_id) = self.layout.active_buffer() {
-                                if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
-                                    buffer.editor_state_mut().cursor.set_position(pos);
-                                }
-                            }
-                        }
-                        self.message = Some("First occurrence".to_string());
-                    }
+                    // Search (will wrap automatically if needed)
+                    self.perform_search()?;
                 }
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2748,30 +2716,18 @@ impl App {
         let current_pos = buffer.editor_state().cursor.position();
         let current_char_idx = buffer.text_buffer().pos_to_char(current_pos)?;
 
-        // Search using regex or plain string
-        let found_match: Option<(usize, usize)> = if self.search_use_regex {
+        // Find ALL matches in the buffer
+        let all_matches: Vec<(usize, usize)> = if self.search_use_regex {
             // Regex search (case-insensitive by default)
             match RegexBuilder::new(&self.search_pattern).case_insensitive(true).build() {
                 Ok(re) => {
-                    if self.search_is_reverse {
-                        // Reverse regex search - find all matches before cursor
-                        let before_chars: String = text.chars().take(current_char_idx).collect();
-                        let mut last_match: Option<(usize, usize)> = None;
-                        for m in re.find_iter(&before_chars) {
-                            let char_start = before_chars[..m.start()].chars().count();
-                            let char_len = before_chars[m.start()..m.end()].chars().count();
-                            last_match = Some((char_start, char_len));
-                        }
-                        last_match
-                    } else {
-                        // Forward regex search - start from current cursor position
-                        let after_chars: String = text.chars().skip(current_char_idx).collect();
-                        re.find(&after_chars).map(|m| {
-                            let char_start = current_char_idx + after_chars[..m.start()].chars().count();
-                            let char_len = after_chars[m.start()..m.end()].chars().count();
+                    re.find_iter(&text)
+                        .map(|m| {
+                            let char_start = text[..m.start()].chars().count();
+                            let char_len = text[m.start()..m.end()].chars().count();
                             (char_start, char_len)
                         })
-                    }
+                        .collect()
                 }
                 Err(_) => {
                     // Invalid regex, show error
@@ -2783,40 +2739,56 @@ impl App {
             // Plain string search (case-insensitive)
             let text_lower = text.to_lowercase();
             let pattern_lower = self.search_pattern.to_lowercase();
+            let mut matches = Vec::new();
+            let mut search_pos = 0;
 
-            if self.search_is_reverse {
-                // Reverse search - search before current position
-                let before_chars: String = text_lower.chars().take(current_char_idx).collect();
-                before_chars.rfind(&pattern_lower).map(|byte_offset| {
-                    let char_idx = before_chars[..byte_offset].chars().count();
-                    let match_len = self.search_pattern.chars().count();
-                    (char_idx, match_len)
-                })
-            } else {
-                // Forward search - start from current cursor position
-                let after_chars: String = text_lower.chars().skip(current_char_idx).collect();
-                after_chars.find(&pattern_lower).map(|byte_offset| {
-                    let char_idx = current_char_idx + after_chars[..byte_offset].chars().count();
-                    let match_len = self.search_pattern.chars().count();
-                    (char_idx, match_len)
-                })
+            while let Some(byte_offset) = text_lower[search_pos..].find(&pattern_lower) {
+                let absolute_byte_pos = search_pos + byte_offset;
+                let char_idx = text_lower[..absolute_byte_pos].chars().count();
+                let match_len = self.search_pattern.chars().count();
+                matches.push((char_idx, match_len));
+                search_pos = absolute_byte_pos + pattern_lower.len();
             }
+            matches
         };
 
-        if let Some((char_idx, match_len)) = found_match {
+        if all_matches.is_empty() {
+            return Ok(false);
+        }
+
+        // Find the next match based on direction
+        let found_match = if self.search_is_reverse {
+            // Reverse search - find the last match that ends at or before cursor (or wrap to end)
+            all_matches.iter()
+                .filter(|(start, len)| *start + *len <= current_char_idx)
+                .last()
+                .or_else(|| all_matches.last()) // Wrap to last match if nothing before
+        } else {
+            // Forward search - find the first match at or after cursor (or wrap to beginning)
+            all_matches.iter()
+                .find(|(start, _)| *start >= current_char_idx)
+                .or_else(|| all_matches.first()) // Wrap to first match if nothing after
+        };
+
+        if let Some(&(char_idx, match_len)) = found_match {
             let pos = buffer.text_buffer().char_to_pos(char_idx);
             let end_char_idx = char_idx + match_len;
             let end_pos = buffer.text_buffer().char_to_pos(end_char_idx);
 
             // Move cursor to END of match (not start) to avoid interfering with first character highlight
             buffer.editor_state_mut().cursor.set_position(end_pos);
-            buffer.editor_state_mut().ensure_cursor_visible();
+            // Center the view on the search result
+            buffer.editor_state_mut().viewport.center_on_line(end_pos.line);
 
             // Select the found text (anchor at start, head at end)
             buffer.editor_state_mut().selection = Some(crate::editor::state::Selection::new(pos, end_pos));
             self.copy_selection_to_primary();
 
-            self.message = Some(format!("Found: {}", self.search_pattern));
+            // Calculate current match index (1-based)
+            let current_index = all_matches.iter().position(|(start, _)| *start == char_idx).unwrap() + 1;
+            let total_count = all_matches.len();
+
+            self.message = Some(format!("Found: {} ({}/{})", self.search_pattern, current_index, total_count));
             Ok(true)
         } else {
             Ok(false)
