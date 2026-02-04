@@ -123,11 +123,15 @@ impl Highlighter {
     /// Clear cache
     pub fn clear_cache(&mut self) {
         self.cache.clear();
+        // Reset parser to clear any internal state
+        self.parser.reset();
     }
 
     /// Clear cache for specific file
     pub fn clear_file_cache(&mut self, file_id: &str) {
         self.cache.remove(file_id);
+        // Reset parser to clear any internal state
+        self.parser.reset();
     }
 }
 

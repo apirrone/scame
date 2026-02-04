@@ -388,7 +388,7 @@ impl BufferView {
                 }
                 col_idx = end_col;
             } else {
-                // Non-selected character - just print with syntax color if available
+                // Non-selected character - batch consecutive same-color characters
                 let ch = chars[col_idx];
 
                 // Check if this is an indentation guide position
@@ -402,24 +402,79 @@ impl BufferView {
                     terminal.set_fg(guide_color)?;
                     terminal.print("│")?;
                     terminal.reset_color()?;
+                    char_idx += ch.len_utf8();
+                    col_idx += 1;
                 } else {
-                    // Render normal character with syntax highlighting
-                    let token_color = line_spans
+                    // Batch consecutive characters with the same syntax color
+                    let absolute_byte_start = line_start_byte + char_idx;
+
+                    // Get color for the current character
+                    let batch_color = line_spans
                         .iter()
-                        .find(|span| absolute_byte >= span.start_byte && absolute_byte < span.end_byte)
+                        .find(|span| absolute_byte_start >= span.start_byte && absolute_byte_start < span.end_byte)
                         .map(|span| theme.color_for(span.token_type));
 
-                    if let Some(color) = token_color {
+                    // Find the end of consecutive characters with the same color/styling
+                    let mut batch_end = col_idx + 1;
+                    let mut temp_byte_offset = char_idx + ch.len_utf8();
+
+                    while batch_end < chars.len() {
+                        let next_ch = chars[batch_end];
+
+                        // Check if next position is marked
+                        if is_marked(batch_end) {
+                            break;
+                        }
+
+                        // Check if next position is selected
+                        if let Some((start, end)) = selection_range {
+                            if batch_end >= start && batch_end < end {
+                                break;
+                            }
+                        }
+
+                        // Check if next position is an indent guide
+                        let next_is_guide = show_indent_guides
+                            && next_ch == ' '
+                            && batch_end < indent_level * 4
+                            && batch_end % 4 == 0;
+                        if next_is_guide {
+                            break;
+                        }
+
+                        // Check if next character has a different color
+                        let next_absolute_byte = line_start_byte + temp_byte_offset;
+                        let next_color = line_spans
+                            .iter()
+                            .find(|span| next_absolute_byte >= span.start_byte && next_absolute_byte < span.end_byte)
+                            .map(|span| theme.color_for(span.token_type));
+
+                        if next_color != batch_color {
+                            break;
+                        }
+
+                        temp_byte_offset += next_ch.len_utf8();
+                        batch_end += 1;
+                    }
+
+                    // Collect and print the entire batch
+                    let batch_text: String = chars[col_idx..batch_end].iter().collect();
+
+                    if let Some(color) = batch_color {
                         terminal.set_fg(color)?;
-                        terminal.print(&ch.to_string())?;
+                        terminal.print(&batch_text)?;
                         terminal.reset_color()?;
                     } else {
-                        terminal.print(&ch.to_string())?;
+                        terminal.print(&batch_text)?;
                     }
-                }
 
-                char_idx += ch.len_utf8();
-                col_idx += 1;
+                    // Update byte tracking for all characters in the batch
+                    for i in col_idx..batch_end {
+                        char_idx += chars[i].len_utf8();
+                    }
+
+                    col_idx = batch_end;
+                }
             }
         }
 

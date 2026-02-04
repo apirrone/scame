@@ -1182,6 +1182,9 @@ impl App {
             Event::Mouse(mouse_event) => {
                 self.handle_mouse(mouse_event)
             }
+            Event::Paste(text) => {
+                self.handle_paste(text)
+            }
             _ => Ok(ControlFlow::Continue),
         }
     }
@@ -1396,6 +1399,76 @@ impl App {
             }
             _ => Ok(ControlFlow::Continue),
         }
+    }
+
+    /// Handle paste event (bracketed paste)
+    fn handle_paste(&mut self, text: String) -> Result<ControlFlow> {
+        // Only handle paste in normal mode
+        if self.mode != AppMode::Normal {
+            return Ok(ControlFlow::Continue);
+        }
+
+        let Some(buffer_id) = self.layout.active_buffer() else {
+            return Ok(ControlFlow::Continue);
+        };
+
+        let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+            return Ok(ControlFlow::Continue);
+        };
+
+        let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+
+        // If there's a selection, delete it first
+        if let Some(selection) = editor_state.selection {
+            let (start, end) = selection.range();
+            if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                undo_manager.record(Change::Delete {
+                    pos: start,
+                    text: deleted,
+                });
+                editor_state.cursor.set_position(start);
+                editor_state.clear_selection();
+            }
+        }
+
+        let pos = editor_state.cursor.position();
+        text_buffer.insert(pos, &text)?;
+        undo_manager.record(Change::Insert {
+            pos,
+            text: text.clone(),
+        });
+
+        // Move cursor to end of pasted text
+        let char_idx = text_buffer.pos_to_char(pos)? + text.len();
+        editor_state.cursor.set_position(text_buffer.char_to_pos(char_idx));
+        editor_state.ensure_cursor_visible();
+
+        // Invalidate syntax highlighting caches to force re-parse
+        self.cached_highlights = None;
+        self.cached_text_hash = 0;
+        self.buffer_highlight_cache.clear();
+
+        // Completely recreate the highlighter to ensure no stale state
+        self.highlighter = crate::syntax::Highlighter::new();
+
+        // Trigger AI completion debouncing (only if enabled)
+        if self.ai_completions_enabled {
+            // Clear any existing suggestion and reset timer
+            self.ai_suggestion = None;
+            self.ai_last_keystroke = Some(std::time::Instant::now());
+            // Cancel any pending AI request
+            if self.ai_pending_request {
+                if let Some(manager) = &self.ai_manager {
+                    let _ = manager.cancel_pending();
+                }
+                self.ai_pending_request = false;
+            }
+        }
+
+        // Notify LSP about the change
+        self.notify_lsp_did_change();
+
+        Ok(ControlFlow::Continue)
     }
 
     /// Copy current selection to primary selection (X11)

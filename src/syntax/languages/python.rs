@@ -30,6 +30,15 @@ pub fn query() -> Result<Query, tree_sitter::QueryError> {
 ; Strings
 (string) @string
 
+; F-string interpolation braces
+(interpolation "{" @punctuation)
+(interpolation "}" @punctuation)
+
+; F-string interpolation content - identifiers
+(interpolation (identifier) @variable)
+(interpolation (attribute (identifier) @variable))
+(interpolation (call function: (identifier) @function))
+
 ; Comments
 (comment) @comment
 
@@ -143,6 +152,7 @@ pub fn capture_names() -> Result<HashMap<usize, TokenType>, tree_sitter::QueryEr
             "constant" => TokenType::Constant,
             "parameter" => TokenType::Parameter,
             "property" => TokenType::Property,
+            "punctuation" => TokenType::Punctuation,
             _ => continue,
         };
         map.insert(i, token_type);

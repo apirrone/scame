@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::{
     cursor::{self, SetCursorStyle},
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute, queue,
     style::{self, Color, Print, SetBackgroundColor, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -22,6 +22,7 @@ impl Terminal {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
+            EnableBracketedPaste,
             Clear(ClearType::All),
             SetCursorStyle::SteadyBlock,
             cursor::Show
@@ -127,6 +128,7 @@ impl Terminal {
         execute!(
             stdout,
             cursor::Show,
+            DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen
         )?;
