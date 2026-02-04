@@ -25,8 +25,28 @@ impl FileSearch {
 
     /// Search for files matching a pattern, optionally prioritizing by extension
     pub fn search(&self, file_tree: &FileTree, pattern: &str, priority_extension: Option<&str>) -> Vec<FileSearchResult> {
+        // If pattern is empty, return all files in alphabetical order
         if pattern.is_empty() {
-            return Vec::new();
+            let mut results: Vec<FileSearchResult> = file_tree
+                .relative_files()
+                .into_iter()
+                .map(|path| {
+                    let path_str = path.to_string_lossy().to_string();
+                    FileSearchResult {
+                        path: file_tree.root().join(&path),
+                        score: 0, // No score needed for alphabetical listing
+                        display_path: path_str,
+                    }
+                })
+                .collect();
+
+            // Sort alphabetically by display path
+            results.sort_by(|a, b| a.display_path.cmp(&b.display_path));
+
+            // Limit results to 100 files (more than fuzzy search since they're all relevant)
+            results.truncate(100);
+
+            return results;
         }
 
         // Remove spaces from the pattern for more flexible fuzzy matching

@@ -3407,16 +3407,22 @@ impl App {
             // Ctrl+P - File picker
             (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                 if self.file_tree.is_some() {
+                    // Get extension before entering file picker mode (to avoid borrow conflicts)
+                    let priority_ext = buffer.file_path()
+                        .and_then(|p| p.extension())
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_string());
+
                     self.mode = AppMode::FilePicker;
                     self.file_picker_pattern.clear();
-                    self.file_picker_results.clear();
                     self.file_picker_selected = 0;
                     self.file_picker_scroll_offset = 0;
 
+                    // Populate initial list with all files (alphabetically sorted)
+                    self.update_file_picker_results();
+
                     // Show what extension is being prioritized
-                    if let Some(ext) = buffer.file_path()
-                        .and_then(|p| p.extension())
-                        .and_then(|e| e.to_str()) {
+                    if let Some(ext) = priority_ext {
                         self.message = Some(format!("Prioritizing .{} files", ext));
                     }
                 } else {
