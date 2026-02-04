@@ -681,7 +681,8 @@ impl App {
                         } else {
                             0
                         };
-                        let screen_col = editor_state.cursor.column as u16 + line_num_width;
+                        // Apply horizontal scrolling offset
+                        let screen_col = editor_state.cursor.column.saturating_sub(editor_state.viewport.left_column) as u16 + line_num_width;
                         terminal.move_cursor(pane_rect.x + screen_col, pane_rect.y + screen_line as u16)?;
                     }
                 }

@@ -136,6 +136,24 @@ impl Viewport {
         }
     }
 
+    /// Scroll to make a column visible (horizontal scrolling)
+    pub fn scroll_to_column(&mut self, column: usize, line_number_width: usize) {
+        // Account for line numbers taking up space
+        let visible_width = (self.width as usize).saturating_sub(line_number_width);
+
+        // Add some margin (keep cursor a bit away from edge)
+        let margin = 5;
+        let effective_width = visible_width.saturating_sub(margin);
+
+        if column < self.left_column + margin {
+            // Cursor is too far left, scroll left
+            self.left_column = column.saturating_sub(margin);
+        } else if column >= self.left_column + effective_width {
+            // Cursor is too far right, scroll right
+            self.left_column = column.saturating_sub(effective_width);
+        }
+    }
+
     /// Center the viewport on a line
     pub fn center_on_line(&mut self, line: usize) {
         self.top_line = line.saturating_sub(self.height as usize / 2);
@@ -221,7 +239,15 @@ impl EditorState {
 
     /// Ensure cursor is visible in viewport
     pub fn ensure_cursor_visible(&mut self) {
+        self.ensure_cursor_visible_with_line_numbers(0);
+    }
+
+    /// Ensure cursor is visible in viewport with horizontal scrolling support
+    pub fn ensure_cursor_visible_with_line_numbers(&mut self, line_number_width: usize) {
+        // Vertical scrolling
         self.viewport.scroll_to_line(self.cursor.line);
+        // Horizontal scrolling
+        self.viewport.scroll_to_column(self.cursor.column, line_number_width);
     }
 }
 

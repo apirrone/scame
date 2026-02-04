@@ -328,8 +328,15 @@ impl BufferView {
             return Ok(());
         }
 
+        // Apply horizontal scrolling offset
+        let left_column = state.viewport.left_column;
+
+        // Skip characters before the left_column (horizontal scroll offset)
         let mut char_idx = 0;
-        let mut col_idx = 0;
+        for i in 0..left_column.min(chars.len()) {
+            char_idx += chars[i].len_utf8();
+        }
+        let mut col_idx = left_column.min(chars.len());
 
         while col_idx < chars.len() {
             let absolute_byte = line_start_byte + char_idx;
@@ -502,7 +509,8 @@ impl BufferView {
 
         // Calculate screen position of cursor
         let screen_line = state.cursor.line.saturating_sub(state.viewport.top_line);
-        let screen_col = state.cursor.column as u16 + line_number_width;
+        // Apply horizontal scrolling offset
+        let screen_col = state.cursor.column.saturating_sub(state.viewport.left_column) as u16 + line_number_width;
 
         // Account for tab bar and path bar at top (2 lines offset)
         let tab_bar_height = 1;
