@@ -194,7 +194,7 @@ Language Server Protocol support for intelligent code features:
 rustup component add rust-analyzer
 
 # Python (choose one)
-npm install -g pyright            # Recommended
+sudo npm install -g pyright       # Recommended (needs sudo for global install)
 pip install python-lsp-server     # Alternative
 ```
 
