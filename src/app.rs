@@ -3510,6 +3510,18 @@ impl App {
                 }
             }
 
+            // Ctrl+N - New buffer
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                // Create a new empty buffer
+                let new_buffer_id = self.workspace.new_buffer();
+
+                // Set it as active in the current pane
+                let active_pane = self.layout.active_pane();
+                self.layout.set_buffer(active_pane, new_buffer_id);
+
+                self.message = Some("New buffer created".to_string());
+            }
+
             // Ctrl+S - Search forward
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 self.mode = AppMode::Search;
