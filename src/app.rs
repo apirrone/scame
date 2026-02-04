@@ -36,6 +36,7 @@ pub enum AppMode {
     ReplaceEnterRepl,   // Prompting for replacement string
     ReplaceConfirm,     // Confirming each replacement
     Completion,         // Showing completion suggestions
+    SaveAsPrompt,       // Prompting for filename to save as
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,8 @@ pub struct App {
     replace_pattern: String,
     replace_with: String,
     replace_count: usize,
+    // Save as state
+    save_as_filename: String,
     // LSP state
     lsp_manager: Option<LspManager>,
     lsp_receiver: Option<mpsc::UnboundedReceiver<LspResponse>>,
@@ -220,6 +223,7 @@ impl App {
             replace_pattern: String::new(),
             replace_with: String::new(),
             replace_count: 0,
+            save_as_filename: String::new(),
             lsp_manager: None,
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
@@ -322,6 +326,7 @@ impl App {
                 replace_pattern: String::new(),
                 replace_with: String::new(),
                 replace_count: 0,
+                save_as_filename: String::new(),
                 lsp_manager: None,
                 lsp_receiver: None,
                 diagnostics_store: DiagnosticsStore::new(),
@@ -390,6 +395,7 @@ impl App {
             replace_pattern: String::new(),
             replace_with: String::new(),
             replace_count: 0,
+            save_as_filename: String::new(),
             lsp_manager: None,
             lsp_receiver: None,
             diagnostics_store: DiagnosticsStore::new(),
@@ -1518,6 +1524,7 @@ impl App {
             AppMode::ReplaceEnterRepl => self.handle_replace_enter_repl_mode(key),
             AppMode::ReplaceConfirm => self.handle_replace_confirm_mode(key),
             AppMode::Completion => self.handle_completion_mode(key),
+            AppMode::SaveAsPrompt => self.handle_save_as_prompt_mode(key),
         }
     }
 
@@ -2398,6 +2405,76 @@ impl App {
         Ok(ControlFlow::Continue)
     }
 
+    /// Handle key in save-as prompt mode
+    fn handle_save_as_prompt_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel save-as
+                self.mode = AppMode::Normal;
+                self.message = Some("Save cancelled".to_string());
+                self.save_as_filename.clear();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+G: Cancel save-as (Emacs style)
+                self.mode = AppMode::Normal;
+                self.message = Some("Save cancelled".to_string());
+                self.save_as_filename.clear();
+            }
+            KeyCode::Enter => {
+                // Save with the specified filename
+                if self.save_as_filename.is_empty() {
+                    self.message = Some("Filename cannot be empty".to_string());
+                    return Ok(ControlFlow::Continue);
+                }
+
+                // Get current working directory
+                let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let file_path = current_dir.join(&self.save_as_filename);
+
+                // Get the active buffer and save it
+                if let Some(buffer_id) = self.layout.active_buffer() {
+                    if let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) {
+                        // Get the content to save
+                        let content = buffer.text_buffer().to_string();
+
+                        // Try to write the file
+                        match std::fs::write(&file_path, &content) {
+                            Ok(_) => {
+                                // Update the buffer with the new file path
+                                buffer.text_buffer_mut().set_file_path(file_path.clone());
+                                buffer.text_buffer_mut().set_modified(false);
+
+                                self.message = Some(format!("Saved as {}", file_path.display()));
+                                self.notify_lsp_did_save();
+                            }
+                            Err(e) => {
+                                self.message = Some(format!("Save failed: {}", e));
+                            }
+                        }
+                    }
+                }
+
+                self.mode = AppMode::Normal;
+                self.save_as_filename.clear();
+            }
+            KeyCode::Char(c) => {
+                // Add character to filename
+                self.save_as_filename.push(c);
+                self.message = Some(format!("Save as: {}", self.save_as_filename));
+            }
+            KeyCode::Backspace if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.save_as_filename.pop();
+                if self.save_as_filename.is_empty() {
+                    self.message = Some("Save as:".to_string());
+                } else {
+                    self.message = Some(format!("Save as: {}", self.save_as_filename));
+                }
+            }
+            _ => {}
+        }
+        Ok(ControlFlow::Continue)
+    }
+
     /// Handle key in replace prompt mode (entering search pattern)
     fn handle_replace_prompt_mode(&mut self, key: KeyEvent) -> Result<ControlFlow> {
         match key.code {
@@ -3260,7 +3337,10 @@ impl App {
                         }
                     }
                 } else {
-                    self.message = Some("No file path set".to_string());
+                    // No file path - prompt for filename
+                    self.mode = AppMode::SaveAsPrompt;
+                    self.save_as_filename.clear();
+                    self.message = Some("Save as:".to_string());
                 }
                 return Ok(ControlFlow::Continue);
             } else if matches!(key.code, KeyCode::Char('h')) && key.modifiers.contains(KeyModifiers::CONTROL) {
