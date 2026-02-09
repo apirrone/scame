@@ -127,9 +127,30 @@ impl LspClient {
             ..Default::default()
         };
 
+        // Set root_uri and workspace_folders to current working directory so LSP can detect venv and configs
+        let cwd = std::env::current_dir().ok();
+        let root_uri = cwd.as_ref().and_then(|path| Url::from_file_path(path).ok());
+
+        // Also set workspace_folders (modern LSP approach)
+        let workspace_folders = root_uri.as_ref().map(|uri| {
+            vec![lsp_types::WorkspaceFolder {
+                uri: uri.clone(),
+                name: cwd
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("workspace")
+                    .to_string(),
+            }]
+        });
+
+        lsp_debug!("[LSP DEBUG] Initializing with root_uri: {:?}", root_uri);
+        lsp_debug!("[LSP DEBUG] Initializing with workspace_folders: {:?}", workspace_folders);
+
         let params = InitializeParams {
             process_id: Some(std::process::id()),
-            root_uri: None,
+            root_uri,
+            workspace_folders,
             capabilities,
             ..Default::default()
         };
