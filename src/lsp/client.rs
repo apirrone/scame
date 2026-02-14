@@ -37,6 +37,7 @@ use tokio::sync::mpsc;
 struct LspClient {
     _process: Child,
     stdin: ChildStdin,
+    stdout_reader: Option<BufReader<ChildStdout>>,
     next_request_id: i64,
     language: Language,
     buffer_id: BufferId,
@@ -51,23 +52,56 @@ impl LspClient {
     ) -> Result<Self> {
         let (cmd, args) = language.server_command();
 
+        // For Python, detect venv and set VIRTUAL_ENV
+        let mut env_vars = std::collections::HashMap::new();
+        if language == Language::Python {
+            if let Ok(cwd) = std::env::current_dir() {
+                // Try common venv directory names
+                for venv_name in &[".venv", "venv", "env"] {
+                    let venv_path = cwd.join(venv_name);
+                    if venv_path.exists() && venv_path.is_dir() {
+                        // Set VIRTUAL_ENV so pyright knows which Python to use
+                        if let Some(venv_str) = venv_path.to_str() {
+                            env_vars.insert("VIRTUAL_ENV", venv_str.to_string());
+                            lsp_debug!("[LSP DEBUG] Setting VIRTUAL_ENV={} for pyright", venv_str);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // Try primary command first
-        let mut process = Command::new(cmd)
+        let mut cmd_builder = Command::new(cmd);
+        cmd_builder
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+
+        // Set environment variables
+        for (key, value) in &env_vars {
+            cmd_builder.env(key, value);
+        }
+
+        let mut process = cmd_builder.spawn();
 
         // If primary fails, try alternatives
         if process.is_err() {
             for (alt_cmd, alt_args) in language.alternative_commands() {
-                process = Command::new(alt_cmd)
+                let mut cmd_builder = Command::new(alt_cmd);
+                cmd_builder
                     .args(&alt_args)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn();
+                    .stderr(Stdio::null());
+
+                // Set environment variables for alternatives too
+                for (key, value) in &env_vars {
+                    cmd_builder.env(key, value);
+                }
+
+                process = cmd_builder.spawn();
 
                 if process.is_ok() {
                     break;
@@ -87,23 +121,49 @@ impl LspClient {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
 
-        // Spawn task to read responses
-        tokio::spawn(async move {
-            Self::read_responses(stdout, response_tx, buffer_id).await;
-        });
+        let stdout_reader = BufReader::new(stdout);
 
         let mut client = Self {
             _process: process,
             stdin,
+            stdout_reader: Some(stdout_reader),
             next_request_id: 1,
             language,
             buffer_id,
         };
 
-        // Send initialize request
+        // Send initialize request and wait for response
         client.initialize().await?;
 
+        // Now spawn task to read responses, taking ownership of stdout_reader
+        if let Some(stdout_reader) = client.stdout_reader.take() {
+            tokio::spawn(async move {
+                Self::read_responses(stdout_reader, response_tx, buffer_id).await;
+            });
+        }
+
         Ok(client)
+    }
+
+    /// Read one LSP message from the reader
+    async fn read_one_message(reader: &mut BufReader<ChildStdout>) -> Result<String> {
+        let mut content_length = 0;
+
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).await?;
+
+            if header.starts_with("Content-Length:") {
+                if let Some(len_str) = header.strip_prefix("Content-Length:") {
+                    content_length = len_str.trim().parse()?;
+                }
+            } else if header == "\r\n" && content_length > 0 {
+                // Read the message body
+                let mut body = vec![0u8; content_length];
+                reader.read_exact(&mut body).await?;
+                return Ok(String::from_utf8(body)?);
+            }
+        }
     }
 
     /// Send initialize request to the language server
@@ -157,11 +217,27 @@ impl LspClient {
 
         self.send_request::<Initialize>(params).await?;
 
-        // Send initialized notification (required by LSP spec)
-        // We don't wait for the initialize response, just send the notification
-        // This is a simplified approach - a full implementation would wait for the response
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait for the initialize response (required by LSP spec)
+        if let Some(ref mut reader) = self.stdout_reader {
+            match Self::read_one_message(reader).await {
+                Ok(response) => {
+                    lsp_debug!("[LSP DEBUG] Received initialize response: {}", response);
 
+                    // Verify it's a valid initialize response
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) {
+                        if let Some(error) = value.get("error") {
+                            return Err(anyhow::anyhow!("LSP initialization failed: {:?}", error));
+                        }
+                    }
+                }
+                Err(e) => {
+                    lsp_debug!("[LSP DEBUG] Failed to read initialize response: {}", e);
+                    return Err(anyhow::anyhow!("Failed to read initialize response: {}", e));
+                }
+            }
+        }
+
+        // Send initialized notification (required by LSP spec)
         let initialized_notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "initialized",
@@ -169,17 +245,17 @@ impl LspClient {
         });
 
         self.send_message(&initialized_notification.to_string()).await?;
+        lsp_debug!("[LSP DEBUG] Sent initialized notification");
 
         Ok(())
     }
 
     /// Read responses from language server
     async fn read_responses(
-        stdout: ChildStdout,
+        mut reader: BufReader<ChildStdout>,
         response_tx: mpsc::UnboundedSender<LspResponse>,
         buffer_id: BufferId,
     ) {
-        let mut reader = BufReader::new(stdout);
         let mut content_length = 0;
 
         loop {
