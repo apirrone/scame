@@ -52,20 +52,41 @@ impl LspClient {
     ) -> Result<Self> {
         let (cmd, args) = language.server_command();
 
-        // For Python, detect venv and set VIRTUAL_ENV
+        // For Python, detect venv and set VIRTUAL_ENV + PATH
         let mut env_vars = std::collections::HashMap::new();
         if language == Language::Python {
-            if let Ok(cwd) = std::env::current_dir() {
-                // Try common venv directory names
-                for venv_name in &[".venv", "venv", "env"] {
-                    let venv_path = cwd.join(venv_name);
-                    if venv_path.exists() && venv_path.is_dir() {
-                        // Set VIRTUAL_ENV so pyright knows which Python to use
-                        if let Some(venv_str) = venv_path.to_str() {
-                            env_vars.insert("VIRTUAL_ENV", venv_str.to_string());
-                            lsp_debug!("[LSP DEBUG] Setting VIRTUAL_ENV={} for pyright", venv_str);
+            let venv_path_opt = if let Ok(existing_venv) = std::env::var("VIRTUAL_ENV") {
+                // Use already activated venv
+                lsp_debug!("[LSP DEBUG] Using existing VIRTUAL_ENV={} for pyright", existing_venv);
+                Some(std::path::PathBuf::from(existing_venv))
+            } else {
+                // Try to detect local venv directories
+                let mut found_venv = None;
+                if let Ok(cwd) = std::env::current_dir() {
+                    for venv_name in &[".venv", "venv", "env"] {
+                        let venv_path = cwd.join(venv_name);
+                        if venv_path.exists() && venv_path.is_dir() {
+                            lsp_debug!("[LSP DEBUG] Detected local venv at {:?}", venv_path);
+                            found_venv = Some(venv_path);
+                            break;
                         }
-                        break;
+                    }
+                }
+                found_venv
+            };
+
+            if let Some(venv_path) = venv_path_opt {
+                if let Some(venv_str) = venv_path.to_str() {
+                    // Set VIRTUAL_ENV
+                    env_vars.insert("VIRTUAL_ENV", venv_str.to_string());
+
+                    // CRITICAL: Also prepend venv/bin to PATH so pyright finds the correct Python executable
+                    let venv_bin = venv_path.join("bin");
+                    if let Some(venv_bin_str) = venv_bin.to_str() {
+                        let current_path = std::env::var("PATH").unwrap_or_default();
+                        let new_path = format!("{}:{}", venv_bin_str, current_path);
+                        env_vars.insert("PATH", new_path);
+                        lsp_debug!("[LSP DEBUG] Setting VIRTUAL_ENV={} and prepending {} to PATH", venv_str, venv_bin_str);
                     }
                 }
             }
