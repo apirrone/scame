@@ -1265,7 +1265,7 @@ impl App {
                 Ok(ControlFlow::Continue)
             }
             MouseEventKind::Down(MouseButton::Middle) => {
-                // Middle-click paste (Linux X11 style)
+                // Middle-click paste (Linux X11 style) at current cursor position
                 let Some(buffer_id) = self.layout.active_buffer() else {
                     return Ok(ControlFlow::Continue);
                 };
@@ -1273,50 +1273,6 @@ impl App {
                 let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
                     return Ok(ControlFlow::Continue);
                 };
-
-                // Convert mouse coordinates to buffer position
-                let mouse_col = mouse_event.column as usize;
-                let mouse_row = mouse_event.row as usize;
-
-                // Account for UI elements: tab bar (1 line), path bar (1 line)
-                let top_offset = 2;
-                if mouse_row < top_offset {
-                    return Ok(ControlFlow::Continue);
-                }
-                let content_row = mouse_row - top_offset;
-
-                // Calculate line number width
-                let line_number_width = if self.show_line_numbers {
-                    let line_count = buffer.text_buffer().len_lines();
-                    let digits = if line_count == 0 {
-                        1
-                    } else {
-                        (line_count as f64).log10().floor() as usize + 1
-                    };
-                    digits.max(3) + 2 // +1 for diagnostic marker, +1 for trailing space
-                } else {
-                    0
-                };
-
-                // Check if click is in the line number area
-                if mouse_col < line_number_width {
-                    return Ok(ControlFlow::Continue);
-                }
-
-                let content_col = mouse_col - line_number_width;
-
-                // Calculate buffer line and column
-                let buffer_line = buffer.editor_state().viewport.top_line + content_row;
-                let buffer_col = content_col;
-
-                // Make sure the line exists
-                if buffer_line >= buffer.text_buffer().len_lines() {
-                    return Ok(ControlFlow::Continue);
-                }
-
-                // Clamp column to line length
-                let line_len = buffer.text_buffer().line_len(buffer_line);
-                let clamped_col = buffer_col.min(line_len);
 
                 // Get text from primary selection (X11 selection, what's currently highlighted)
                 // On Linux, this gets whatever is selected anywhere in the OS
@@ -1348,7 +1304,8 @@ impl App {
 
                 if let Some(text) = clipboard_text {
                     let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-                    let pos = Position::new(buffer_line, clamped_col);
+                    // Paste at current cursor position
+                    let pos = editor_state.cursor.position();
                     text_buffer.insert(pos, &text)?;
                     undo_manager.record(Change::Insert {
                         pos,
