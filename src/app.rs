@@ -2,6 +2,7 @@ use crate::backup::BackupManager;
 use crate::buffer::{Change, Position};
 use crate::config::Config;
 use crate::editor::movement::Movement;
+use crate::editor::state::Cursor;
 use crate::logger;
 use crate::ai::{AiManager, AiResponse};
 use crate::lsp::{DiagnosticsStore, LspManager, LspResponse};
@@ -3440,10 +3441,34 @@ impl App {
         }
 
         match (key.code, key.modifiers) {
-            // Esc - Dismiss AI suggestion
-            (KeyCode::Esc, KeyModifiers::NONE) if self.ai_suggestion.is_some() => {
-                self.ai_suggestion = None;
-                self.message = Some("AI suggestion dismissed".to_string());
+            // Esc - Clear secondary cursors, or dismiss AI suggestion
+            (KeyCode::Esc, KeyModifiers::NONE) => {
+                let has_secondary = self.workspace.active_buffer()
+                    .map(|b| b.editor_state().has_secondary_cursors())
+                    .unwrap_or(false);
+                if has_secondary {
+                    if let Some(buf) = self.workspace.active_buffer_mut() {
+                        buf.editor_state_mut().clear_secondary_cursors();
+                    }
+                } else if self.ai_suggestion.is_some() {
+                    self.ai_suggestion = None;
+                    self.message = Some("AI suggestion dismissed".to_string());
+                }
+                return Ok(ControlFlow::Continue);
+            }
+
+            // Ctrl+G - Clear secondary cursors (Emacs style cancel)
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                let has_secondary = self.workspace.active_buffer()
+                    .map(|b| b.editor_state().has_secondary_cursors())
+                    .unwrap_or(false);
+                if has_secondary {
+                    if let Some(buf) = self.workspace.active_buffer_mut() {
+                        buf.editor_state_mut().clear_secondary_cursors();
+                    }
+                    return Ok(ControlFlow::Continue);
+                }
+                // Fall through: no secondary cursors, Ctrl+G does nothing in normal mode
                 return Ok(ControlFlow::Continue);
             }
 
@@ -3818,62 +3843,87 @@ impl App {
             // Also handle Ctrl+H since many terminals send this for Ctrl+Backspace
             (KeyCode::Backspace, KeyModifiers::CONTROL) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-                let pos = editor_state.cursor.position();
 
-                if pos.column > 0 {
-                    if let Some(line) = text_buffer.get_line(pos.line) {
-                        let chars: Vec<char> = line.chars().collect();
-                        let mut word_start = pos.column;
+                // Compute word start for a given (line string, column)
+                let word_start_for = |line: &str, col: usize| -> usize {
+                    let chars: Vec<char> = line.chars().collect();
+                    let mut ws = col;
+                    while ws > 0 && chars.get(ws - 1).map_or(false, |c| c.is_whitespace()) {
+                        ws -= 1;
+                    }
+                    if ws > 0 {
+                        if chars.get(ws - 1).map_or(false, |c| c.is_alphanumeric()) {
+                            while ws > 0 && chars.get(ws - 1).map_or(false, |c| c.is_alphanumeric()) {
+                                ws -= 1;
+                            }
+                        } else {
+                            ws -= 1;
+                        }
+                    }
+                    ws
+                };
 
-                        // Skip trailing whitespace
-                        while word_start > 0 && word_start <= chars.len() {
-                            let idx = word_start - 1;
-                            if idx < chars.len() && chars[idx].is_whitespace() {
-                                word_start -= 1;
-                            } else {
-                                break;
+                if editor_state.has_secondary_cursors() {
+                    // Multi-cursor: collect all delete ranges, apply bottom-to-top
+                    let primary_pos = editor_state.cursor.position();
+                    let secondary_positions: Vec<Position> = editor_state.secondary_cursors.iter().map(|c| c.position()).collect();
+
+                    // Compute (delete_start, original_pos) for each cursor
+                    let mut ops: Vec<(Position, Position)> = Vec::new();
+
+                    if primary_pos.column > 0 {
+                        if let Some(line) = text_buffer.get_line(primary_pos.line) {
+                            let ws = word_start_for(&line, primary_pos.column);
+                            if ws < primary_pos.column {
+                                ops.push((Position::new(primary_pos.line, ws), primary_pos));
                             }
                         }
-
-                        // Check what character we're at now
-                        if word_start > 0 {
-                            let idx = word_start - 1;
-                            if idx < chars.len() {
-                                let ch = chars[idx];
-
-                                if ch.is_alphanumeric() {
-                                    // Delete the whole word (alphanumeric only)
-                                    while word_start > 0 {
-                                        let idx = word_start - 1;
-                                        if idx < chars.len() {
-                                            let ch = chars[idx];
-                                            if ch.is_alphanumeric() {
-                                                word_start -= 1;
-                                            } else {
-                                                break;
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    // It's punctuation or underscore - delete just one character
-                                    word_start -= 1;
+                    }
+                    for scpos in &secondary_positions {
+                        if scpos.column > 0 {
+                            if let Some(line) = text_buffer.get_line(scpos.line) {
+                                let ws = word_start_for(&line, scpos.column);
+                                if ws < scpos.column {
+                                    ops.push((Position::new(scpos.line, ws), *scpos));
                                 }
                             }
                         }
+                    }
 
-                        // Delete from word_start to current cursor position
-                        if word_start < pos.column {
-                            let delete_start = Position::new(pos.line, word_start);
-                            let delete_end = pos;
-                            if let Ok(deleted) = text_buffer.delete_range(delete_start, delete_end) {
-                                undo_manager.record(Change::Delete {
-                                    pos: delete_start,
-                                    text: deleted,
-                                });
-                                editor_state.cursor.set_position(delete_start);
-                                editor_state.ensure_cursor_visible();
+                    // Sort bottom-to-top to avoid invalidating positions
+                    ops.sort_by(|(a, _), (b, _)| b.line.cmp(&a.line).then(b.column.cmp(&a.column)));
+
+                    for (del_start, del_end) in &ops {
+                        if let Ok(deleted) = text_buffer.delete_range(*del_start, *del_end) {
+                            undo_manager.record(Change::Delete { pos: *del_start, text: deleted });
+                        }
+                    }
+
+                    // Update primary cursor
+                    if let Some((ws, _)) = ops.iter().find(|(_, end)| *end == primary_pos) {
+                        editor_state.cursor.set_position(*ws);
+                    }
+                    editor_state.ensure_cursor_visible();
+
+                    // Update secondary cursors
+                    for (sc, old_pos) in editor_state.secondary_cursors.iter_mut().zip(secondary_positions.iter()) {
+                        if let Some((ws, _)) = ops.iter().find(|(_, end)| end == old_pos) {
+                            sc.set_position(*ws);
+                        }
+                    }
+                } else {
+                    // Single cursor
+                    let pos = editor_state.cursor.position();
+                    if pos.column > 0 {
+                        if let Some(line) = text_buffer.get_line(pos.line) {
+                            let ws = word_start_for(&line, pos.column);
+                            if ws < pos.column {
+                                let delete_start = Position::new(pos.line, ws);
+                                if let Ok(deleted) = text_buffer.delete_range(delete_start, pos) {
+                                    undo_manager.record(Change::Delete { pos: delete_start, text: deleted });
+                                    editor_state.cursor.set_position(delete_start);
+                                    editor_state.ensure_cursor_visible();
+                                }
                             }
                         }
                     }
@@ -3964,6 +4014,9 @@ impl App {
                 let (_text_buffer, editor_state, _) = buffer.split_mut();
                 Movement::move_to_line_start(editor_state);
                 editor_state.clear_selection();
+                for sc in editor_state.secondary_cursors.iter_mut() {
+                    sc.move_horizontal(0);
+                }
             }
 
             // Ctrl+Shift+E - Select to end of line
@@ -3983,6 +4036,12 @@ impl App {
                 let (text_buffer, editor_state, _) = buffer.split_mut();
                 Movement::move_to_line_end(editor_state, text_buffer);
                 editor_state.clear_selection();
+                let positions: Vec<(usize, usize)> = editor_state.secondary_cursors.iter()
+                    .map(|sc| (sc.line, text_buffer.line_len(sc.line)))
+                    .collect();
+                for (sc, (_, col)) in editor_state.secondary_cursors.iter_mut().zip(positions.iter()) {
+                    sc.move_horizontal(*col);
+                }
             }
 
             // Ctrl+K - Kill line (delete from cursor to end of line)
@@ -4105,10 +4164,27 @@ impl App {
                 }
 
                 if mods.contains(KeyModifiers::CONTROL) {
-                    // Ctrl+Left or Ctrl+Shift+Left: move by word
-                    Movement::move_word_left(editor_state, text_buffer);
+                    if editor_state.has_secondary_cursors() {
+                        // Multi-cursor: restrict all cursors to their own line
+                        let (nl, nc) = Movement::word_left_pos(editor_state.cursor.line, editor_state.cursor.column, text_buffer);
+                        editor_state.cursor.move_to(nl, nc);
+                        editor_state.ensure_cursor_visible();
+                        for sc in editor_state.secondary_cursors.iter_mut() {
+                            let (nl, nc) = Movement::word_left_pos(sc.line, sc.column, text_buffer);
+                            sc.move_to(nl, nc);
+                        }
+                    } else {
+                        Movement::move_word_left(editor_state, text_buffer);
+                    }
+                } else if editor_state.has_secondary_cursors() {
+                    // Multi-cursor: restrict all cursors to their own line
+                    let col = editor_state.cursor.column.saturating_sub(1);
+                    editor_state.cursor.move_horizontal(col);
+                    editor_state.ensure_cursor_visible();
+                    for sc in editor_state.secondary_cursors.iter_mut() {
+                        sc.move_horizontal(sc.column.saturating_sub(1));
+                    }
                 } else {
-                    // Regular left movement
                     Movement::move_left(editor_state, text_buffer);
                 }
 
@@ -4126,10 +4202,29 @@ impl App {
                 }
 
                 if mods.contains(KeyModifiers::CONTROL) {
-                    // Ctrl+Right or Ctrl+Shift+Right: move by word
-                    Movement::move_word_right(editor_state, text_buffer);
+                    if editor_state.has_secondary_cursors() {
+                        // Multi-cursor: restrict all cursors to their own line
+                        let (nl, nc) = Movement::word_right_pos(editor_state.cursor.line, editor_state.cursor.column, text_buffer);
+                        editor_state.cursor.move_to(nl, nc);
+                        editor_state.ensure_cursor_visible();
+                        for sc in editor_state.secondary_cursors.iter_mut() {
+                            let (nl, nc) = Movement::word_right_pos(sc.line, sc.column, text_buffer);
+                            sc.move_to(nl, nc);
+                        }
+                    } else {
+                        Movement::move_word_right(editor_state, text_buffer);
+                    }
+                } else if editor_state.has_secondary_cursors() {
+                    // Multi-cursor: restrict all cursors to their own line
+                    let line_len = text_buffer.line_len(editor_state.cursor.line);
+                    let col = (editor_state.cursor.column + 1).min(line_len);
+                    editor_state.cursor.move_horizontal(col);
+                    editor_state.ensure_cursor_visible();
+                    for sc in editor_state.secondary_cursors.iter_mut() {
+                        let line_len = text_buffer.line_len(sc.line);
+                        sc.move_horizontal((sc.column + 1).min(line_len));
+                    }
                 } else {
-                    // Regular right movement
                     Movement::move_right(editor_state, text_buffer);
                 }
 
@@ -4138,6 +4233,36 @@ impl App {
                     self.copy_selection_to_primary();
                 } else {
                     editor_state.clear_selection();
+                }
+            }
+            // Alt+Shift+Up: add cursor above
+            (KeyCode::Up, mods) if mods.contains(KeyModifiers::ALT) && mods.contains(KeyModifiers::SHIFT) => {
+                let (text_buffer, editor_state, _) = buffer.split_mut();
+                let min_line = editor_state.secondary_cursors.iter()
+                    .map(|c| c.line)
+                    .fold(editor_state.cursor.line, |a, b| a.min(b));
+                if min_line > 0 {
+                    let new_line = min_line - 1;
+                    let desired_col = editor_state.cursor.desired_column;
+                    let col = desired_col.min(text_buffer.line_len(new_line));
+                    let mut sc = Cursor::new(new_line, col);
+                    sc.desired_column = desired_col;
+                    editor_state.secondary_cursors.push(sc);
+                }
+            }
+            // Alt+Shift+Down: add cursor below
+            (KeyCode::Down, mods) if mods.contains(KeyModifiers::ALT) && mods.contains(KeyModifiers::SHIFT) => {
+                let (text_buffer, editor_state, _) = buffer.split_mut();
+                let max_line = editor_state.secondary_cursors.iter()
+                    .map(|c| c.line)
+                    .fold(editor_state.cursor.line, |a, b| a.max(b));
+                if max_line + 1 < text_buffer.len_lines() {
+                    let new_line = max_line + 1;
+                    let desired_col = editor_state.cursor.desired_column;
+                    let col = desired_col.min(text_buffer.line_len(new_line));
+                    let mut sc = Cursor::new(new_line, col);
+                    sc.desired_column = desired_col;
+                    editor_state.secondary_cursors.push(sc);
                 }
             }
             (KeyCode::Up, mods) => {
@@ -4375,40 +4500,59 @@ impl App {
             (KeyCode::Backspace, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
-                // If there's a selection, delete it
-                if let Some(selection) = editor_state.selection {
-                    let (start, end) = selection.range();
-                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
-                        undo_manager.record(Change::Delete {
-                            pos: start,
-                            text: deleted,
-                        });
-                        editor_state.cursor.set_position(start);
-                        editor_state.clear_selection();
-                        editor_state.ensure_cursor_visible();
+                if editor_state.has_secondary_cursors() {
+                    // Multi-cursor backspace: delete previous char at each cursor (if not at col 0)
+                    editor_state.clear_selection();
+
+                    // Primary cursor
+                    if editor_state.cursor.column > 0 {
+                        let col = editor_state.cursor.column - 1;
+                        let pos = Position::new(editor_state.cursor.line, col);
+                        if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                            undo_manager.record(Change::Delete { pos, text: ch.to_string() });
+                            editor_state.cursor.move_horizontal(col);
+                        }
                     }
-                } else if editor_state.cursor.column > 0 {
-                    let pos = Position::new(
-                        editor_state.cursor.line,
-                        editor_state.cursor.column - 1,
-                    );
-                    if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
-                        undo_manager.record(Change::Delete {
-                            pos,
-                            text: ch.to_string(),
-                        });
-                        Movement::move_left(editor_state, text_buffer);
+                    editor_state.ensure_cursor_visible();
+
+                    // Secondary cursors
+                    for sc in editor_state.secondary_cursors.iter_mut() {
+                        if sc.column > 0 {
+                            let col = sc.column - 1;
+                            let pos = Position::new(sc.line, col);
+                            if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                                undo_manager.record(Change::Delete { pos, text: ch.to_string() });
+                                sc.move_horizontal(col);
+                            }
+                        }
                     }
-                } else if editor_state.cursor.line > 0 {
-                    let prev_line_len = text_buffer.line_len(editor_state.cursor.line - 1);
-                    let pos = Position::new(editor_state.cursor.line - 1, prev_line_len);
-                    if let Ok(Some(deleted)) = text_buffer.delete_char(pos) {
-                        undo_manager.record(Change::Delete {
-                            pos,
-                            text: deleted.to_string(),
-                        });
-                        editor_state.cursor.move_to(editor_state.cursor.line - 1, prev_line_len);
-                        editor_state.ensure_cursor_visible();
+                } else {
+                    // Single cursor
+                    if let Some(selection) = editor_state.selection {
+                        let (start, end) = selection.range();
+                        if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                            undo_manager.record(Change::Delete { pos: start, text: deleted });
+                            editor_state.cursor.set_position(start);
+                            editor_state.clear_selection();
+                            editor_state.ensure_cursor_visible();
+                        }
+                    } else if editor_state.cursor.column > 0 {
+                        let pos = Position::new(
+                            editor_state.cursor.line,
+                            editor_state.cursor.column - 1,
+                        );
+                        if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                            undo_manager.record(Change::Delete { pos, text: ch.to_string() });
+                            Movement::move_left(editor_state, text_buffer);
+                        }
+                    } else if editor_state.cursor.line > 0 {
+                        let prev_line_len = text_buffer.line_len(editor_state.cursor.line - 1);
+                        let pos = Position::new(editor_state.cursor.line - 1, prev_line_len);
+                        if let Ok(Some(deleted)) = text_buffer.delete_char(pos) {
+                            undo_manager.record(Change::Delete { pos, text: deleted.to_string() });
+                            editor_state.cursor.move_to(editor_state.cursor.line - 1, prev_line_len);
+                            editor_state.ensure_cursor_visible();
+                        }
                     }
                 }
             }
@@ -4626,29 +4770,35 @@ impl App {
                     // Insert 4 spaces for indentation
                     let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
-                    // If there's a selection, delete it first
-                    if let Some(selection) = editor_state.selection {
-                        let (start, end) = selection.range();
-                        if let Ok(deleted) = text_buffer.delete_range(start, end) {
-                            undo_manager.record(Change::Delete {
-                                pos: start,
-                                text: deleted,
-                            });
-                            editor_state.cursor.set_position(start);
-                            editor_state.clear_selection();
+                    if editor_state.has_secondary_cursors() {
+                        // Multi-cursor: insert spaces at all cursor positions bottom-to-top
+                        editor_state.clear_selection();
+                        let positions = editor_state.all_positions_bottom_to_top();
+                        for pos in &positions {
+                            text_buffer.insert(*pos, "    ")?;
+                            undo_manager.record(Change::Insert { pos: *pos, text: "    ".to_string() });
                         }
+                        editor_state.cursor.column += 4;
+                        editor_state.ensure_cursor_visible();
+                        for sc in editor_state.secondary_cursors.iter_mut() {
+                            sc.column += 4;
+                        }
+                    } else {
+                        // Single cursor
+                        if let Some(selection) = editor_state.selection {
+                            let (start, end) = selection.range();
+                            if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                                undo_manager.record(Change::Delete { pos: start, text: deleted });
+                                editor_state.cursor.set_position(start);
+                                editor_state.clear_selection();
+                            }
+                        }
+                        let pos = editor_state.cursor.position();
+                        text_buffer.insert(pos, "    ")?;
+                        undo_manager.record(Change::Insert { pos, text: "    ".to_string() });
+                        editor_state.cursor.column += 4;
+                        editor_state.ensure_cursor_visible();
                     }
-
-                    let pos = editor_state.cursor.position();
-                    // Insert 4 spaces
-                    text_buffer.insert(pos, "    ")?;
-                    undo_manager.record(Change::Insert {
-                        pos,
-                        text: "    ".to_string(),
-                    });
-                    // Move cursor 4 positions right
-                    editor_state.cursor.column += 4;
-                    editor_state.ensure_cursor_visible();
                 }
             }
 
@@ -4656,38 +4806,46 @@ impl App {
             (KeyCode::Char(c), mods) if !mods.contains(KeyModifiers::CONTROL) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
-                // If there's a selection, delete it first
-                if let Some(selection) = editor_state.selection {
-                    let (start, end) = selection.range();
-                    if let Ok(deleted) = text_buffer.delete_range(start, end) {
-                        undo_manager.record(Change::Delete {
-                            pos: start,
-                            text: deleted,
-                        });
-                        editor_state.cursor.set_position(start);
-                        editor_state.clear_selection();
+                if editor_state.has_secondary_cursors() {
+                    // Multi-cursor insertion: apply bottom-to-top to avoid invalidating positions
+                    editor_state.clear_selection();
+                    let positions = editor_state.all_positions_bottom_to_top();
+                    for pos in &positions {
+                        text_buffer.insert_char(*pos, c)?;
+                        undo_manager.record(Change::Insert { pos: *pos, text: c.to_string() });
                     }
-                }
-
-                let pos = editor_state.cursor.position();
-                text_buffer.insert_char(pos, c)?;
-                undo_manager.record(Change::Insert {
-                    pos,
-                    text: c.to_string(),
-                });
-                Movement::move_right(editor_state, text_buffer);
-
-                // Trigger AI completion debouncing (only if enabled)
-                if self.ai_completions_enabled {
-                    // Clear any existing suggestion and reset timer
-                    self.ai_suggestion = None;
-                    self.ai_last_keystroke = Some(Instant::now());
-                    // Cancel any pending AI request
-                    if self.ai_pending_request {
-                        if let Some(manager) = &self.ai_manager {
-                            let _ = manager.cancel_pending();
+                    // Advance primary cursor
+                    editor_state.cursor.move_horizontal(editor_state.cursor.column + 1);
+                    editor_state.ensure_cursor_visible();
+                    // Advance secondary cursors
+                    for sc in editor_state.secondary_cursors.iter_mut() {
+                        sc.move_horizontal(sc.column + 1);
+                    }
+                } else {
+                    // Single cursor: delete selection if present, then insert
+                    if let Some(selection) = editor_state.selection {
+                        let (start, end) = selection.range();
+                        if let Ok(deleted) = text_buffer.delete_range(start, end) {
+                            undo_manager.record(Change::Delete { pos: start, text: deleted });
+                            editor_state.cursor.set_position(start);
+                            editor_state.clear_selection();
                         }
-                        self.ai_pending_request = false;
+                    }
+                    let pos = editor_state.cursor.position();
+                    text_buffer.insert_char(pos, c)?;
+                    undo_manager.record(Change::Insert { pos, text: c.to_string() });
+                    Movement::move_right(editor_state, text_buffer);
+
+                    // Trigger AI completion debouncing (only if enabled)
+                    if self.ai_completions_enabled {
+                        self.ai_suggestion = None;
+                        self.ai_last_keystroke = Some(Instant::now());
+                        if self.ai_pending_request {
+                            if let Some(manager) = &self.ai_manager {
+                                let _ = manager.cancel_pending();
+                            }
+                            self.ai_pending_request = false;
+                        }
                     }
                 }
             }

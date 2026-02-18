@@ -202,6 +202,51 @@ impl Movement {
         state.ensure_cursor_visible();
     }
 
+    /// Pure word-left: returns (new_line, new_col) without touching state.
+    /// Does NOT cross line boundaries — stops at col 0 of the current line.
+    pub fn word_left_pos(line: usize, col: usize, buffer: &TextBuffer) -> (usize, usize) {
+        let mut col = col;
+        if let Some(line_text) = buffer.get_line(line) {
+            let chars: Vec<char> = line_text.chars().collect();
+            while col > 0 && chars.get(col.saturating_sub(1)).map_or(false, |&c| c.is_whitespace()) {
+                col -= 1;
+            }
+            if col > 0 {
+                let in_word = chars.get(col.saturating_sub(1)).map_or(false, |&c| Self::is_word_char(c));
+                while col > 0 {
+                    if let Some(&prev_char) = chars.get(col - 1) {
+                        if Self::is_word_char(prev_char) != in_word { break; }
+                        col -= 1;
+                    } else { break; }
+                }
+            }
+        }
+        (line, col)
+    }
+
+    /// Pure word-right: returns (new_line, new_col) without touching state.
+    /// Does NOT cross line boundaries — stops at line_len of the current line.
+    pub fn word_right_pos(line: usize, col: usize, buffer: &TextBuffer) -> (usize, usize) {
+        let mut col = col;
+        let line_len = buffer.line_len(line);
+        if let Some(line_text) = buffer.get_line(line) {
+            let chars: Vec<char> = line_text.chars().collect();
+            if col < line_len && chars.get(col).map_or(false, |&c| c.is_whitespace()) {
+                while col < line_len && chars.get(col).map_or(false, |&c| c.is_whitespace()) { col += 1; }
+            } else if col < line_len && Self::is_word_char(chars[col]) {
+                while col < line_len && chars.get(col).map_or(false, |&c| Self::is_word_char(c)) { col += 1; }
+            } else if col < line_len {
+                let current_type = chars[col];
+                while col < line_len {
+                    let ch = chars[col];
+                    if Self::is_word_char(ch) || ch.is_whitespace() || ch != current_type { break; }
+                    col += 1;
+                }
+            }
+        }
+        (line, col)
+    }
+
     /// Helper: check if line is blank (only whitespace)
     fn is_blank_line(buffer: &TextBuffer, line: usize) -> bool {
         if let Some(line_text) = buffer.get_line(line) {

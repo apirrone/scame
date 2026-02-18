@@ -195,6 +195,7 @@ pub enum EditorMode {
 /// Complete editor state
 pub struct EditorState {
     pub cursor: Cursor,
+    pub secondary_cursors: Vec<Cursor>,
     pub selection: Option<Selection>,
     pub viewport: Viewport,
     pub mode: EditorMode,
@@ -204,10 +205,28 @@ impl EditorState {
     pub fn new(viewport_width: u16, viewport_height: u16) -> Self {
         Self {
             cursor: Cursor::zero(),
+            secondary_cursors: Vec::new(),
             selection: None,
             viewport: Viewport::new(viewport_width, viewport_height),
             mode: EditorMode::Normal,
         }
+    }
+
+    pub fn has_secondary_cursors(&self) -> bool {
+        !self.secondary_cursors.is_empty()
+    }
+
+    pub fn clear_secondary_cursors(&mut self) {
+        self.secondary_cursors.clear();
+    }
+
+    /// All cursor positions sorted bottom-to-top (for safe insertion order).
+    pub fn all_positions_bottom_to_top(&self) -> Vec<Position> {
+        let mut positions: Vec<Position> = std::iter::once(self.cursor.position())
+            .chain(self.secondary_cursors.iter().map(|c| c.position()))
+            .collect();
+        positions.sort_by(|a, b| b.line.cmp(&a.line).then(b.column.cmp(&a.column)));
+        positions
     }
 
     /// Start a selection at the current cursor position

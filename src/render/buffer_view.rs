@@ -173,6 +173,40 @@ impl BufferView {
         } else {
             0
         };
+
+        // Render secondary cursors as inverted blocks
+        if !state.secondary_cursors.is_empty() {
+            use crossterm::{queue, style::{Attribute, Print, SetAttribute}};
+            use std::io::Write;
+            let mut stdout = std::io::stdout();
+
+            let (_, term_height) = terminal.size();
+            let top_bars_height: u16 = 2;
+            let content_height = term_height.saturating_sub(top_bars_height + 1);
+
+            for sc in &state.secondary_cursors {
+                let sc_screen_line = sc.line.saturating_sub(state.viewport.top_line);
+                if sc_screen_line >= content_height as usize {
+                    continue;
+                }
+                let sc_screen_col = sc.column.saturating_sub(state.viewport.left_column) as u16 + line_number_width;
+                let sc_screen_y = sc_screen_line as u16 + top_bars_height;
+
+                let ch = buffer.get_line(sc.line)
+                    .as_deref()
+                    .and_then(|line| line.trim_end_matches(&['\n', '\r'][..]).chars().nth(sc.column))
+                    .unwrap_or(' ');
+
+                terminal.move_cursor(sc_screen_col, sc_screen_y)?;
+                queue!(stdout,
+                    SetAttribute(Attribute::Reverse),
+                    Print(ch),
+                    SetAttribute(Attribute::Reset)
+                )?;
+            }
+            stdout.flush()?;
+        }
+
         Self::render_cursor(terminal, state, line_number_width)?;
         Ok(())
     }
