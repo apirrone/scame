@@ -85,6 +85,7 @@ pub enum CommandAction {
     ToggleAiCompletions,
     ToggleIndentGuides,
     ToggleBackups,
+    AddCursorsToLineEnds,
 }
 
 pub struct App {
@@ -554,6 +555,12 @@ impl App {
                 description: "Enable/disable automatic file backups (~ files)".to_string(),
                 keybinding: None,
                 action: CommandAction::ToggleBackups,
+            },
+            Command {
+                name: "Add Cursors to End of Selected Lines".to_string(),
+                description: "Place a cursor at the end of each line covered by the current selection".to_string(),
+                keybinding: None,
+                action: CommandAction::AddCursorsToLineEnds,
             },
         ]
     }
@@ -2175,6 +2182,34 @@ impl App {
                 let new_state = !self.backup_manager.is_enabled();
                 self.backup_manager.set_enabled(new_state);
                 self.message = Some(format!("Backups: {}", if new_state { "ON" } else { "OFF" }));
+            }
+            CommandAction::AddCursorsToLineEnds => {
+                if let Some(buf) = self.workspace.active_buffer_mut() {
+                    let (text_buffer, editor_state, _) = buf.split_mut();
+                    if let Some(selection) = editor_state.selection {
+                        let start_line = selection.start().line;
+                        let end_line = selection.end().line;
+                        editor_state.clear_selection();
+                        editor_state.secondary_cursors.clear();
+                        // Place the primary cursor at the end of the first selected line,
+                        // and secondary cursors at the end of each remaining line.
+                        let first_col = text_buffer.line_len(start_line);
+                        editor_state.cursor.move_to(start_line, first_col);
+                        for line in (start_line + 1)..=end_line {
+                            let col = text_buffer.line_len(line);
+                            editor_state.secondary_cursors.push(
+                                crate::editor::state::Cursor::new(line, col)
+                            );
+                        }
+                        editor_state.ensure_cursor_visible();
+                        self.message = Some(format!(
+                            "Added {} cursor(s) to line ends",
+                            end_line - start_line + 1
+                        ));
+                    } else {
+                        self.message = Some("No selection — select lines first".to_string());
+                    }
+                }
             }
         }
         Ok(ControlFlow::Continue)
@@ -4600,25 +4635,36 @@ impl App {
             (KeyCode::Delete, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
 
-                // If there's a selection, delete it
-                if let Some(selection) = editor_state.selection {
+                if editor_state.has_secondary_cursors() {
+                    // Multi-cursor delete: delete char at each cursor position
+                    editor_state.clear_selection();
+
+                    let pos = editor_state.cursor.position();
+                    if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                        undo_manager.record(Change::Delete { pos, text: ch.to_string() });
+                    }
+                    editor_state.ensure_cursor_visible();
+
+                    for sc in editor_state.secondary_cursors.iter_mut() {
+                        let pos = Position::new(sc.line, sc.column);
+                        if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
+                            undo_manager.record(Change::Delete { pos, text: ch.to_string() });
+                        }
+                    }
+                } else if let Some(selection) = editor_state.selection {
+                    // Single cursor with selection: delete selection
                     let (start, end) = selection.range();
                     if let Ok(deleted) = text_buffer.delete_range(start, end) {
-                        undo_manager.record(Change::Delete {
-                            pos: start,
-                            text: deleted,
-                        });
+                        undo_manager.record(Change::Delete { pos: start, text: deleted });
                         editor_state.cursor.set_position(start);
                         editor_state.clear_selection();
                         editor_state.ensure_cursor_visible();
                     }
                 } else {
+                    // Single cursor, no selection: delete char at cursor
                     let pos = editor_state.cursor.position();
                     if let Ok(Some(ch)) = text_buffer.delete_char(pos) {
-                        undo_manager.record(Change::Delete {
-                            pos,
-                            text: ch.to_string(),
-                        });
+                        undo_manager.record(Change::Delete { pos, text: ch.to_string() });
                     }
                 }
             }
