@@ -122,6 +122,7 @@ pub struct App {
     search_start_pos: Option<Position>,
     search_is_reverse: bool,
     search_use_regex: bool,
+    search_all_matches: Vec<(Position, Position)>,
     // Jump to line state
     jump_to_line_input: String,
     // Replace state
@@ -223,6 +224,7 @@ impl App {
             search_start_pos: None,
             search_is_reverse: false,
             search_use_regex: false,
+            search_all_matches: Vec::new(),
             jump_to_line_input: String::new(),
             replace_pattern: String::new(),
             replace_with: String::new(),
@@ -327,6 +329,7 @@ impl App {
                 search_start_pos: None,
                 search_is_reverse: false,
                 search_use_regex: false,
+                search_all_matches: Vec::new(),
                 jump_to_line_input: String::new(),
                 replace_pattern: String::new(),
                 replace_with: String::new(),
@@ -397,6 +400,7 @@ impl App {
             search_start_pos: None,
             search_is_reverse: false,
             search_use_regex: false,
+            search_all_matches: Vec::new(),
             jump_to_line_input: String::new(),
             replace_pattern: String::new(),
             replace_with: String::new(),
@@ -782,6 +786,12 @@ impl App {
                 Vec::new()
             };
 
+            let search_matches: &[(Position, Position)] = if self.mode == AppMode::Search {
+                &self.search_all_matches
+            } else {
+                &[]
+            };
+
             BufferView::render(
                 terminal,
                 buffer.text_buffer(),
@@ -795,6 +805,7 @@ impl App {
                 buffer.file_path().map(|p| p.as_path()),
                 self.show_indent_guides,
                 &position_marks_positions,
+                search_matches,
             )?;
             StatusBar::render(
                 terminal,
@@ -2953,8 +2964,18 @@ impl App {
         };
 
         if all_matches.is_empty() {
+            self.search_all_matches.clear();
             return Ok(false);
         }
+
+        // Store all match positions for rendering highlights
+        self.search_all_matches = all_matches.iter()
+            .map(|&(char_idx, match_len)| {
+                let start = buffer.text_buffer().char_to_pos(char_idx);
+                let end = buffer.text_buffer().char_to_pos(char_idx + match_len);
+                (start, end)
+            })
+            .collect();
 
         // Find the next match based on direction
         let found_match = if self.search_is_reverse {

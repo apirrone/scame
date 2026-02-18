@@ -1,4 +1,4 @@
-use crate::buffer::TextBuffer;
+use crate::buffer::{Position, TextBuffer};
 use crate::editor::EditorState;
 use crate::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::render::terminal::Terminal;
@@ -25,6 +25,7 @@ impl BufferView {
         file_path: Option<&Path>,
         show_indent_guides: bool,
         word_marks_positions: &[(usize, usize, usize)],
+        search_matches: &[(Position, Position)],
     ) -> Result<()> {
         let (term_width, term_height) = terminal.size();
         let line_number_width = if show_line_numbers {
@@ -154,7 +155,7 @@ impl BufferView {
                 let indent_level = indent_levels.get(screen_row as usize).copied().unwrap_or(0);
 
                 // Render the line with selection highlighting if applicable
-                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line, show_indent_guides, indent_level, word_marks_positions)?;
+                Self::render_line(terminal, line, buffer_line, state, line_number_width, buffer, highlight_spans, theme, ai_line_to_show, show_ai_on_cursor_line, show_indent_guides, indent_level, word_marks_positions, search_matches)?;
             }
         }
 
@@ -225,6 +226,7 @@ impl BufferView {
         show_indent_guides: bool,
         indent_level: usize,
         word_marks_positions: &[(usize, usize, usize)],
+        search_matches: &[(Position, Position)],
     ) -> Result<()> {
         // Calculate byte offset for this line in the buffer
         let line_start_byte = buffer.line_to_byte(line_num);
@@ -256,6 +258,24 @@ impl BufferView {
             marked_ranges.iter().any(|(start, end)| col >= *start && col < *end)
         };
 
+        // Get search match ranges for this line (same logic as selection range extraction)
+        let search_ranges: Vec<(usize, usize)> = search_matches
+            .iter()
+            .filter_map(|(start, end)| {
+                if line_num >= start.line && line_num <= end.line {
+                    let sc = if line_num == start.line { start.column } else { 0 };
+                    let ec = if line_num == end.line { end.column } else { line.len() };
+                    if sc < ec { Some((sc, ec)) } else { None }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let is_search_match = |col: usize| -> bool {
+            search_ranges.iter().any(|(s, e)| col >= *s && col < *e)
+        };
+
         // Selection colors - use bright cyan background with black text for maximum contrast
         let selection_bg = Color::Rgb { r: 100, g: 180, b: 255 }; // Bright blue
         let selection_fg = Color::Black;
@@ -263,6 +283,10 @@ impl BufferView {
         // Mark colors - use magenta background with white text
         let mark_bg = Color::Rgb { r: 255, g: 100, b: 255 }; // Magenta
         let mark_fg = Color::White;
+
+        // Search match colors - amber background
+        let search_match_bg = Color::Rgb { r: 180, g: 120, b: 0 };
+        let search_match_fg = Color::Black;
 
         // Guide color for indentation guides
         let guide_color = Color::Rgb { r: 60, g: 60, b: 60 };
@@ -315,6 +339,11 @@ impl BufferView {
                             terminal.print(&ch.to_string())?;
                         }
                         terminal.reset_color()?;
+                    } else if is_search_match(col_idx) {
+                        terminal.set_bg(search_match_bg)?;
+                        terminal.set_fg(search_match_fg)?;
+                        terminal.print(&ch.to_string())?;
+                        terminal.reset_color()?;
                     } else {
                         if is_guide_pos {
                             terminal.set_fg(guide_color)?;
@@ -324,6 +353,11 @@ impl BufferView {
                             terminal.print(&ch.to_string())?;
                         }
                     }
+                } else if is_search_match(col_idx) {
+                    terminal.set_bg(search_match_bg)?;
+                    terminal.set_fg(search_match_fg)?;
+                    terminal.print(&ch.to_string())?;
+                    terminal.reset_color()?;
                 } else {
                     if is_guide_pos {
                         terminal.set_fg(guide_color)?;
@@ -383,6 +417,9 @@ impl BufferView {
                 .map(|(start, end)| col_idx >= start && col_idx < end)
                 .unwrap_or(false);
 
+            // Check if current character is a (non-current) search match
+            let is_search_match_char = !is_selected && is_search_match(col_idx);
+
             if is_marked_char {
                 // Find the end of the marked region
                 let mut end_col = col_idx;
@@ -424,6 +461,25 @@ impl BufferView {
                 terminal.reset_color()?;
 
                 // Advance
+                for i in col_idx..end_col {
+                    char_idx += chars[i].len_utf8();
+                }
+                col_idx = end_col;
+            } else if is_search_match_char {
+                // Search match (not currently selected) — batch consecutive matched chars
+                let mut end_col = col_idx;
+                while end_col < chars.len() && is_search_match(end_col) && !is_marked(end_col) {
+                    let still_selected = selection_range
+                        .map(|(s, e)| end_col >= s && end_col < e)
+                        .unwrap_or(false);
+                    if still_selected { break; }
+                    end_col += 1;
+                }
+                let matched_text: String = chars[col_idx..end_col].iter().collect();
+                terminal.set_bg(search_match_bg)?;
+                terminal.set_fg(search_match_fg)?;
+                terminal.print(&matched_text)?;
+                terminal.reset_color()?;
                 for i in col_idx..end_col {
                     char_idx += chars[i].len_utf8();
                 }
@@ -472,6 +528,11 @@ impl BufferView {
                             if batch_end >= start && batch_end < end {
                                 break;
                             }
+                        }
+
+                        // Check if next position is a search match
+                        if is_search_match(batch_end) {
+                            break;
                         }
 
                         // Check if next position is an indent guide
