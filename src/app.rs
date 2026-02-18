@@ -163,6 +163,8 @@ pub struct App {
     pending_sudo_save_path: Option<PathBuf>,
     pending_sudo_save_content: Option<String>,
     execute_sudo_save_on_render: bool,
+    // Mouse drag selection state
+    mouse_drag_start: Option<Position>,
 }
 
 impl App {
@@ -251,6 +253,7 @@ impl App {
             pending_sudo_save_path: None,
             pending_sudo_save_content: None,
             execute_sudo_save_on_render: false,
+            mouse_drag_start: None,
         })
     }
 
@@ -354,6 +357,7 @@ impl App {
                 pending_sudo_save_path: None,
                 pending_sudo_save_content: None,
                 execute_sudo_save_on_render: false,
+                mouse_drag_start: None,
             });
         }
 
@@ -423,6 +427,7 @@ impl App {
             pending_sudo_save_path: None,
             pending_sudo_save_content: None,
             execute_sudo_save_on_render: false,
+            mouse_drag_start: None,
         })
     }
 
@@ -1196,16 +1201,63 @@ impl App {
         }
     }
 
+    /// Convert mouse coordinates to buffer position
+    fn mouse_to_buffer_pos(mouse_event: &MouseEvent, buffer: &crate::workspace::Buffer, show_line_numbers: bool) -> Option<Position> {
+        let mouse_col = mouse_event.column as usize;
+        let mouse_row = mouse_event.row as usize;
+
+        // Account for UI elements: tab bar (1 line), path bar (1 line)
+        let top_offset = 2;
+        if mouse_row < top_offset {
+            return None;
+        }
+        let content_row = mouse_row - top_offset;
+
+        // Calculate line number width
+        let line_number_width = if show_line_numbers {
+            let line_count = buffer.text_buffer().len_lines();
+            let digits = if line_count == 0 {
+                1
+            } else {
+                (line_count as f64).log10().floor() as usize + 1
+            };
+            digits.max(3) + 2 // +1 for diagnostic marker, +1 for trailing space
+        } else {
+            0
+        };
+
+        // Check if click is in the line number area
+        if mouse_col < line_number_width {
+            return None;
+        }
+
+        let content_col = mouse_col - line_number_width;
+
+        // Calculate buffer line and column
+        let buffer_line = buffer.editor_state().viewport.top_line + content_row;
+
+        // Make sure the line exists
+        if buffer_line >= buffer.text_buffer().len_lines() {
+            return None;
+        }
+
+        // Clamp column to line length
+        let line_len = buffer.text_buffer().line_len(buffer_line);
+        let clamped_col = content_col.min(line_len);
+
+        Some(Position::new(buffer_line, clamped_col))
+    }
+
     /// Handle a mouse event
     fn handle_mouse(&mut self, mouse_event: MouseEvent) -> Result<ControlFlow> {
-        // Only handle middle-click in normal mode
+        // Only handle mouse events in normal mode
         if self.mode != AppMode::Normal {
             return Ok(ControlFlow::Continue);
         }
 
         match mouse_event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Left-click to position cursor
+                // Left-click to position cursor and start drag selection
                 let Some(buffer_id) = self.layout.active_buffer() else {
                     return Ok(ControlFlow::Continue);
                 };
@@ -1215,57 +1267,21 @@ impl App {
                 };
 
                 // Convert mouse coordinates to buffer position
-                let mouse_col = mouse_event.column as usize;
-                let mouse_row = mouse_event.row as usize;
-
-                // Account for UI elements: tab bar (1 line), path bar (1 line)
-                let top_offset = 2;
-                if mouse_row < top_offset {
+                let Some(pos) = Self::mouse_to_buffer_pos(&mouse_event, buffer, self.show_line_numbers) else {
                     return Ok(ControlFlow::Continue);
-                }
-                let content_row = mouse_row - top_offset;
-
-                // Calculate line number width
-                let line_number_width = if self.show_line_numbers {
-                    let line_count = buffer.text_buffer().len_lines();
-                    let digits = if line_count == 0 {
-                        1
-                    } else {
-                        (line_count as f64).log10().floor() as usize + 1
-                    };
-                    digits.max(3) + 2 // +1 for diagnostic marker, +1 for trailing space
-                } else {
-                    0
                 };
 
-                // Check if click is in the line number area
-                if mouse_col < line_number_width {
-                    return Ok(ControlFlow::Continue);
-                }
-
-                let content_col = mouse_col - line_number_width;
-
-                // Calculate buffer line and column
-                let buffer_line = buffer.editor_state().viewport.top_line + content_row;
-                let buffer_col = content_col;
-
-                // Make sure the line exists
-                if buffer_line >= buffer.text_buffer().len_lines() {
-                    return Ok(ControlFlow::Continue);
-                }
-
-                // Clamp column to line length
-                let line_len = buffer.text_buffer().line_len(buffer_line);
-                let clamped_col = buffer_col.min(line_len);
-
-                // Position cursor at click location
-                buffer.editor_state_mut().cursor.set_position(Position::new(buffer_line, clamped_col));
+                // Position cursor at click location and clear selection
+                buffer.editor_state_mut().cursor.set_position(pos);
                 buffer.editor_state_mut().clear_selection();
+
+                // Start tracking drag from this position
+                self.mouse_drag_start = Some(pos);
 
                 Ok(ControlFlow::Continue)
             }
             MouseEventKind::Down(MouseButton::Middle) => {
-                // Middle-click paste (Linux X11 style) at current cursor position
+                // Middle-click paste at current cursor position
                 let Some(buffer_id) = self.layout.active_buffer() else {
                     return Ok(ControlFlow::Continue);
                 };
@@ -1274,49 +1290,83 @@ impl App {
                     return Ok(ControlFlow::Continue);
                 };
 
-                // Get text from primary selection (X11 selection, what's currently highlighted)
-                // On Linux, this gets whatever is selected anywhere in the OS
-                let clipboard_text = {
-                    #[cfg(target_os = "linux")]
-                    {
-                        // Try to get primary selection first (X11 selection buffer)
-                        use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
-                        match Clipboard::new() {
-                            Ok(mut clipboard) => {
-                                clipboard
-                                    .get()
-                                    .clipboard(LinuxClipboardKind::Primary)
-                                    .text()
-                                    .ok()
-                            }
-                            Err(_) => None
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        // On non-Linux systems, fall back to regular clipboard
-                        match arboard::Clipboard::new() {
-                            Ok(mut clipboard) => clipboard.get_text().ok(),
-                            Err(_) => None
-                        }
-                    }
-                };
+                let clipboard_text = arboard::Clipboard::new()
+                    .ok()
+                    .and_then(|mut cb| cb.get_text().ok());
 
                 if let Some(text) = clipboard_text {
-                    let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
-                    // Paste at current cursor position
-                    let pos = editor_state.cursor.position();
-                    text_buffer.insert(pos, &text)?;
-                    undo_manager.record(Change::Insert {
-                        pos,
-                        text: text.clone(),
-                    });
+                    if !text.is_empty() {
+                        let (text_buffer, editor_state, undo_manager) = buffer.split_mut();
+                        let pos = editor_state.cursor.position();
+                        text_buffer.insert(pos, &text)?;
+                        undo_manager.record(Change::Insert {
+                            pos,
+                            text: text.clone(),
+                        });
+                        let char_idx = text_buffer.pos_to_char(pos)? + text.len();
+                        editor_state.cursor.set_position(text_buffer.char_to_pos(char_idx));
+                        editor_state.ensure_cursor_visible();
+                        self.message = Some("Pasted".to_string());
+                    }
+                }
 
-                    // Move cursor to end of pasted text
-                    let char_idx = text_buffer.pos_to_char(pos)? + text.len();
-                    editor_state.cursor.set_position(text_buffer.char_to_pos(char_idx));
-                    editor_state.ensure_cursor_visible();
-                    self.message = Some("Pasted".to_string());
+                Ok(ControlFlow::Continue)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Drag to extend selection
+                if self.mouse_drag_start.is_none() {
+                    return Ok(ControlFlow::Continue);
+                }
+
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer_mut(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Convert mouse coordinates to buffer position
+                let Some(drag_pos) = Self::mouse_to_buffer_pos(&mouse_event, buffer, self.show_line_numbers) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                // Get the drag start position
+                let start_pos = self.mouse_drag_start.unwrap();
+
+                // Create selection from start to current drag position
+                use crate::editor::state::Selection;
+                buffer.editor_state_mut().selection = Some(Selection::new(start_pos, drag_pos));
+                buffer.editor_state_mut().cursor.set_position(drag_pos);
+
+                Ok(ControlFlow::Continue)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Finish drag selection and copy to clipboard
+                self.mouse_drag_start = None;
+
+                let Some(buffer_id) = self.layout.active_buffer() else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                let Some(buffer) = self.workspace.get_buffer(buffer_id) else {
+                    return Ok(ControlFlow::Continue);
+                };
+
+                if let Some(selection) = buffer.editor_state().selection {
+                    let (start, end) = selection.range();
+                    if let (Ok(start_idx), Ok(end_idx)) = (
+                        buffer.text_buffer().pos_to_char(start),
+                        buffer.text_buffer().pos_to_char(end),
+                    ) {
+                        if start_idx < end_idx {
+                            let text = buffer.text_buffer().to_string();
+                            let selected_text: String = text.chars().skip(start_idx).take(end_idx - start_idx).collect();
+                            let _ = arboard::Clipboard::new()
+                                .ok()
+                                .map(|mut cb| cb.set_text(selected_text));
+                        }
+                    }
                 }
 
                 Ok(ControlFlow::Continue)
@@ -2218,11 +2268,14 @@ impl App {
                             self.layout.set_buffer(pane, next_id);
                             self.message = Some("Buffer saved and closed".to_string());
                         } else {
-                            // No more buffers, exit
-                            self.message = Some("All buffers closed".to_string());
+                            // No more buffers, open a new empty one
+                            let new_id = self.workspace.new_buffer();
+                            let pane = self.layout.active_pane();
+                            self.layout.set_buffer(pane, new_id);
+                            self.message = Some("New buffer".to_string());
                             self.mode = AppMode::Normal;
                             self.pending_close_buffer_id = None;
-                            return Ok(ControlFlow::Exit);
+                            return Ok(ControlFlow::Continue);
                         }
                     }
                 }
@@ -2241,11 +2294,14 @@ impl App {
                         self.layout.set_buffer(pane, next_id);
                         self.message = Some("Buffer closed without saving".to_string());
                     } else {
-                        // No more buffers, exit
-                        self.message = Some("All buffers closed".to_string());
+                        // No more buffers, open a new empty one
+                        let new_id = self.workspace.new_buffer();
+                        let pane = self.layout.active_pane();
+                        self.layout.set_buffer(pane, new_id);
+                        self.message = Some("New buffer".to_string());
                         self.mode = AppMode::Normal;
                         self.pending_close_buffer_id = None;
-                        return Ok(ControlFlow::Exit);
+                        return Ok(ControlFlow::Continue);
                     }
                 }
                 self.mode = AppMode::Normal;
@@ -3431,9 +3487,11 @@ impl App {
                                     self.layout.set_buffer(pane, next_id);
                                     self.message = Some("Buffer closed".to_string());
                                 } else {
-                                    // No more buffers, exit
-                                    self.message = Some("All buffers closed".to_string());
-                                    return Ok(ControlFlow::Exit);
+                                    // No more buffers, open a new empty one
+                                    let new_id = self.workspace.new_buffer();
+                                    let pane = self.layout.active_pane();
+                                    self.layout.set_buffer(pane, new_id);
+                                    self.message = Some("New buffer".to_string());
                                 }
                             }
                         }
