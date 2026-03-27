@@ -28,6 +28,7 @@ impl OpenFileResult {
 /// Manages multiple buffers in the workspace
 pub struct Workspace {
     buffers: HashMap<BufferId, Buffer>,
+    tab_order: Vec<BufferId>, // Tracks insertion order for tab display
     active_buffer: Option<BufferId>,
     next_id: usize,
     buffer_history: Vec<BufferId>, // For navigation (jump back)
@@ -39,6 +40,7 @@ impl Workspace {
     pub fn new(viewport_width: u16, viewport_height: u16) -> Self {
         Self {
             buffers: HashMap::new(),
+            tab_order: Vec::new(),
             active_buffer: None,
             next_id: 0,
             buffer_history: Vec::new(),
@@ -55,6 +57,7 @@ impl Workspace {
         let buffer = Buffer::new(id, width, height);
 
         self.buffers.insert(id, buffer);
+        self.tab_order.push(id);
         self.set_active_buffer(id);
 
         id
@@ -81,6 +84,7 @@ impl Workspace {
         let buffer = Buffer::from_file(id, path, width, height)?;
 
         self.buffers.insert(id, buffer);
+        self.tab_order.push(id);
         self.set_active_buffer(id);
 
         Ok(OpenFileResult::NewBuffer(id))
@@ -126,35 +130,33 @@ impl Workspace {
 
     /// Switch to the next buffer
     pub fn next_buffer(&mut self) {
-        if self.buffers.is_empty() {
+        if self.tab_order.is_empty() {
             return;
         }
 
-        let ids: Vec<BufferId> = self.buffers.keys().copied().collect();
         if let Some(current_id) = self.active_buffer {
-            if let Some(pos) = ids.iter().position(|&id| id == current_id) {
-                let next_pos = (pos + 1) % ids.len();
-                self.set_active_buffer(ids[next_pos]);
+            if let Some(pos) = self.tab_order.iter().position(|&id| id == current_id) {
+                let next_pos = (pos + 1) % self.tab_order.len();
+                self.set_active_buffer(self.tab_order[next_pos]);
             }
-        } else if !ids.is_empty() {
-            self.set_active_buffer(ids[0]);
+        } else {
+            self.set_active_buffer(self.tab_order[0]);
         }
     }
 
     /// Switch to the previous buffer
     pub fn previous_buffer(&mut self) {
-        if self.buffers.is_empty() {
+        if self.tab_order.is_empty() {
             return;
         }
 
-        let ids: Vec<BufferId> = self.buffers.keys().copied().collect();
         if let Some(current_id) = self.active_buffer {
-            if let Some(pos) = ids.iter().position(|&id| id == current_id) {
-                let prev_pos = if pos == 0 { ids.len() - 1 } else { pos - 1 };
-                self.set_active_buffer(ids[prev_pos]);
+            if let Some(pos) = self.tab_order.iter().position(|&id| id == current_id) {
+                let prev_pos = if pos == 0 { self.tab_order.len() - 1 } else { pos - 1 };
+                self.set_active_buffer(self.tab_order[prev_pos]);
             }
-        } else if !ids.is_empty() {
-            self.set_active_buffer(ids[0]);
+        } else {
+            self.set_active_buffer(self.tab_order[0]);
         }
     }
 
@@ -176,10 +178,11 @@ impl Workspace {
         }
 
         self.buffers.remove(&id);
+        self.tab_order.retain(|&tid| tid != id);
 
         // If we closed the active buffer, switch to another
         if self.active_buffer == Some(id) {
-            self.active_buffer = self.buffers.keys().next().copied();
+            self.active_buffer = self.tab_order.first().copied();
         }
 
         Ok(())
@@ -188,15 +191,16 @@ impl Workspace {
     /// Close a buffer without checking if modified
     pub fn force_close_buffer(&mut self, id: BufferId) {
         self.buffers.remove(&id);
+        self.tab_order.retain(|&tid| tid != id);
 
         if self.active_buffer == Some(id) {
-            self.active_buffer = self.buffers.keys().next().copied();
+            self.active_buffer = self.tab_order.first().copied();
         }
     }
 
-    /// Get all buffer IDs
+    /// Get all buffer IDs in tab order
     pub fn buffer_ids(&self) -> Vec<BufferId> {
-        self.buffers.keys().copied().collect()
+        self.tab_order.clone()
     }
 
     /// Get the number of open buffers
@@ -226,14 +230,16 @@ impl Workspace {
             .collect()
     }
 
-    /// Get list of all buffers with display info (id, name, modified)
+    /// Get list of all buffers with display info (id, name, modified) in tab order
     pub fn buffer_list(&self) -> Vec<(BufferId, String, bool)> {
-        self.buffers
+        self.tab_order
             .iter()
-            .map(|(id, buf)| {
-                let name = buf.display_name();
-                let modified = buf.is_actually_modified();
-                (*id, name, modified)
+            .filter_map(|id| {
+                self.buffers.get(id).map(|buf| {
+                    let name = buf.display_name();
+                    let modified = buf.is_actually_modified();
+                    (*id, name, modified)
+                })
             })
             .collect()
     }
