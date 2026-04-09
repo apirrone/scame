@@ -1309,6 +1309,14 @@ impl App {
                     return Ok(ControlFlow::Continue);
                 };
 
+                #[cfg(target_os = "linux")]
+                let clipboard_text = {
+                    use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
+                    Clipboard::new()
+                        .ok()
+                        .and_then(|mut cb| cb.get().clipboard(LinuxClipboardKind::Primary).text().ok())
+                };
+                #[cfg(not(target_os = "linux"))]
                 let clipboard_text = arboard::Clipboard::new()
                     .ok()
                     .and_then(|mut cb| cb.get_text().ok());
