@@ -5,6 +5,7 @@ use std::path::Path;
 pub enum Language {
     Rust,
     Python,
+    Cpp,
 }
 
 impl Language {
@@ -15,6 +16,7 @@ impl Language {
             .and_then(|ext| match ext {
                 "rs" => Some(Language::Rust),
                 "py" | "pyw" | "pyi" => Some(Language::Python),
+                "cpp" | "cxx" | "cc" | "c++" | "hpp" | "hxx" | "hh" | "h++" | "c" | "h" => Some(Language::Cpp),
                 _ => None,
             })
     }
@@ -24,6 +26,7 @@ impl Language {
         match self {
             Language::Rust => "rust",
             Language::Python => "python",
+            Language::Cpp => "cpp",
         }
     }
 
@@ -33,6 +36,7 @@ impl Language {
             Language::Rust => ("rust-analyzer", vec![]),
             // Try different possible pyright installations
             Language::Python => ("pyright-langserver", vec!["--stdio"]),
+            Language::Cpp => ("clangd", vec!["--background-index", "--clang-tidy"]),
         }
     }
 
@@ -43,6 +47,12 @@ impl Language {
             Language::Python => vec![
                 ("pyright", vec!["--stdio"]),
                 ("pylsp", vec![]), // python-lsp-server as fallback
+            ],
+            Language::Cpp => vec![
+                ("clangd-18", vec!["--background-index"]),
+                ("clangd-17", vec!["--background-index"]),
+                ("clangd-16", vec!["--background-index"]),
+                ("clangd-15", vec!["--background-index"]),
             ],
         }
     }

@@ -534,6 +534,7 @@ impl LspClient {
         match language {
             Language::Rust => "rustup component add rust-analyzer",
             Language::Python => "pip install pyright",
+            Language::Cpp => "apt install clangd (or: brew install llvm)",
         }
     }
 
